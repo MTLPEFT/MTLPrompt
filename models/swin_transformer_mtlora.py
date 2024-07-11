@@ -733,7 +733,6 @@ class SwinTransformerMTLoRA(nn.Module):
             if tasks_lora is None:
                 tasks_lora = {task: x for task in self.tasks}
             if return_stages:
-
                 out.append((x, tasks_lora))
             i = i + 1
 

@@ -101,6 +101,14 @@ class DecoderGroup(nn.Module):
                     for task in self.tasks:
                         self.prompt_tailor[task] = nn.Linear(in_features=self.channels[-1], out_features=self.channels[0])
 
+            # TODO
+            if config.MODEL.MTLPROMPT.PROMPT.CHANNEL.ENABLED:
+                if config.MODEL.MTLPROMPT.PROMPT.CHANNEL.TAILOR == "MLP":
+                    self.prompt_tailor = nn.ModuleDict()
+                    from models.swin_transformer import Mlp
+                    # for task in self.tasks:
+                    #     self.prompt_tailor[task] = nn.Linear(in_features=self.channels[-1], out_features=self.channels[0])
+
         else:
             for task in self.tasks:
                 self.decoders[task] = get_head(task,
