@@ -466,6 +466,8 @@ class BasicLayer(nn.Module):
         self.use_checkpoint = use_checkpoint
         self.num_prompts = num_prompts
 
+        self.tasks = cfg.TASKS
+
         # build blocks
         if num_prompts is not None:
             self.blocks = nn.ModuleList([
@@ -508,7 +510,7 @@ class BasicLayer(nn.Module):
         else:
             self.downsample = None
 
-    def forward(self, x, mtl_prompt_embd=None):
+    def forward(self, x, mtl_prompt_embd=None, spa_prompt = None):
         if mtl_prompt_embd is None:
             for blk in self.blocks:
                 if self.use_checkpoint:
@@ -519,6 +521,39 @@ class BasicLayer(nn.Module):
                 x = self.downsample(x)
 
             return x
+
+        elif mtl_prompt_embd is not None and spa_prompt is not None:
+            B = len(x)
+            num_blocks = len(self.blocks)
+
+            for i in range(num_blocks - 1):
+                prompt_emb = mtl_prompt_embd.expand(B, -1, -1)
+                x = torch.cat((prompt_emb, x), dim=1)
+                x, prompt_emb = self.blocks[i](x)
+
+            out = {}
+            x_task = {}
+            x_ori = x
+
+            x = torch.cat((prompt_emb, x_ori), dim=1)
+            x, prompt_emb = self.blocks[-1](x)
+            if self.downsample is not None:
+                x = torch.cat((prompt_emb, x), dim=1)
+                x, prompt_emb = self.downsample(x)
+
+            spa_prompt_emb = {}
+            for task in self.tasks:
+                spa_prompt_emb[task] = spa_prompt[task].expand(B, -1, -1)
+
+                x_task[task] = torch.cat((spa_prompt_emb[task], x_ori), dim=1)
+                out[task], spa_prompt_emb[task] = self.blocks[-1](x_task[task])
+
+                if self.downsample is not None:
+                    out[task] = torch.cat((spa_prompt_emb[task], out[task]), dim=1)
+                    out[task], spa_prompt_emb[task] = self.downsample(out[task])
+                    out[task] = out[task] + x
+
+            return x, out, prompt_emb, spa_prompt_emb
 
         else:
             B = len(x)

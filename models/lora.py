@@ -675,6 +675,12 @@ def lora_detail(model : nn.Module) -> None:
     decoder_params = sum(p.numel() for name, p in model.named_parameters()
                          if 'backbone' not in name)
 
+    for name, p in model.named_parameters():
+        print(f"{name} : {p.numel()}")
+
+    for name, p in model.named_parameters():
+        print(f"{name} : {p.requires_grad}")
+
     print(f"""
     Number of trainable params: {trainable_params:,}
     Decoder params:             {decoder_params:,}

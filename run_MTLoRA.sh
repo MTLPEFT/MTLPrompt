@@ -1,9 +1,9 @@
 # A15 0,1 Exp
-#RANDOM=$$
-#CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=2  --master_port=$((RANDOM%1000+12000)) \
-#main.py --cfg './configs/mtlora/tiny_448/mtlora_tiny_448_r16_scale4_pertask.yaml' --pascal '/home/cvlab/datasets/PASCAL_MT' \
-#--tasks semseg,normals,sal,human_parts --batch-size 16 --ckpt-freq=20 --epoch 300 \
-#--resume-backbone '../pretrained/swin_tiny_patch4_window7_224_22k.pth' --use-checkpoint
+RANDOM=$$
+CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=2  --master_port=$((RANDOM%1000+12000)) \
+main.py --cfg './configs/mtlora/tiny_448/mtlora_tiny_448_r64_scale4_pertask.yaml' --pascal '/home/cvlab/datasets/PASCAL_MT' \
+--tasks semseg,normals,sal,human_parts --batch-size 16 --ckpt-freq=20 --epoch 300 \
+--resume-backbone '../pretrained/swin_tiny_patch4_window7_224.pth' --use-checkpoint --disable_wandb
 
 # A15 0,1 Exp
 #RANDOM=$$
@@ -22,11 +22,11 @@
 
 
 #B2 2 3 Exp
-RANDOM=$$
-CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=2  --master_port=$((RANDOM%1000+12000)) \
-main.py --cfg './configs/mtlora/tiny_448/mtlora_plus_tiny_448_r16_scale4.yaml' --pascal '/home/cvlab/datasets/PASCAL_MT' \
---tasks semseg,normals,sal,human_parts --batch-size 16 --ckpt-freq=20 --epoch 300 \
---resume-backbone '../pretrained/swin_tiny_patch4_window7_224.pth' --use-checkpoint --disable_wandb
+#RANDOM=$$
+#CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=2  --master_port=$((RANDOM%1000+12000)) \
+#main.py --cfg './configs/mtlora/tiny_448/mtlora_plus_tiny_448_r16_scale4.yaml' --pascal '/home/cvlab/datasets/PASCAL_MT' \
+#--tasks semseg,normals,sal,human_parts --batch-size 16 --ckpt-freq=20 --epoch 300 \
+#--resume-backbone '../pretrained/swin_tiny_patch4_window7_224.pth' --use-checkpoint --disable_wandb
 
 
 

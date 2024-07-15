@@ -60,7 +60,7 @@ class DecoderGroup(nn.Module):
 
         self.heads = nn.ModuleDict()
 
-        if config.MODEL.MTLPROMPT.ENABLED:
+        if config.MODEL.MTLPROMPT.ENABLED and config.MODEL.MTLPROMPT.DECODER_TYPE != "baseline":
             from models.seg_hrnet import HighResolutionHead
             self.fusion = HighResolutionHead(self.channels, config.MODEL.MTLPROMPT.FINAL_EMBED_DIM*2)
 
@@ -116,7 +116,7 @@ class DecoderGroup(nn.Module):
 
     def forward(self, x, shared_prompt=None):
 
-        if self.config.MODEL.MTLPROMPT.ENABLED:
+        if self.config.MODEL.MTLPROMPT.ENABLED and self.config.MODEL.MTLPROMPT.DECODER_TYPE != "baseline":
 
             # TODO
             # 1. Fusion
@@ -235,7 +235,12 @@ class MultiTaskSwin(nn.Module):
                 {task: Downsampler(dims=self.dims, channels=self.channels, input_res=self.input_res, bias=False) for task in self.tasks})
 
         elif self.mtlprompt.ENABLED:
-            self.downsampler = Downsampler(dims=self.dims, channels=self.channels, input_res=self.input_res, bias=False, enabled=False)
+            if self.mtlprompt.DECODER_TYPE == "baseline":
+                self.downsampler = nn.ModuleDict(
+                    {task: Downsampler(dims=self.dims, channels=self.channels, input_res=self.input_res, bias=False) for
+                     task in self.tasks})
+            else:
+                self.downsampler = Downsampler(dims=self.dims, channels=self.channels, input_res=self.input_res, bias=False, enabled=False)
 
         else:
             self.downsampler = Downsampler(
@@ -246,15 +251,15 @@ class MultiTaskSwin(nn.Module):
         if config.MODEL.DECODER_DOWNSAMPLER:
             print("Decoder channels: ", self.channels)
             print("Per task downsampler: ", self.per_task_downsampler)
-        # if self.per_task_downsampler:
-        #     self.downsampler = nn.ModuleDict({
-        #         task: Downsampler(
-        #             dims=self.dims, channels=self.channels, input_res=self.input_res, bias=False, enabled=config.MODEL.DECODER_DOWNSAMPLER)
-        #         for task in self.tasks
-        #     })
-        # else:
-        #     self.downsampler = Downsampler(
-        #         dims=self.dims, channels=self.channels, input_res=self.input_res, bias=False)
+        if self.per_task_downsampler:
+            self.downsampler = nn.ModuleDict({
+                task: Downsampler(
+                    dims=self.dims, channels=self.channels, input_res=self.input_res, bias=False, enabled=config.MODEL.DECODER_DOWNSAMPLER)
+                for task in self.tasks
+            })
+        else:
+            self.downsampler = Downsampler(
+                dims=self.dims, channels=self.channels, input_res=self.input_res, bias=False)
 
         self.decoders = DecoderGroup(
             self.tasks, self.num_outputs, channels=self.channels, out_size=self.img_size, config=config, multiscale=True)
@@ -276,13 +281,40 @@ class MultiTaskSwin(nn.Module):
 
             result = self.decoders(shared_ft)
 
-        elif self.mtlprompt.ENABLED:
+        elif self.mtlprompt.ENABLED and self.mtlprompt.DECODER_TYPE != "baseline":
             x, x_downsample, shared_prompt = self.backbone(x)
 
             # Fusion is in self.decoder for mtlprompt
             shared_ft = self.downsampler(x_downsample)   # B C H W
 
             result = self.decoders(shared_ft, shared_prompt)
+
+        elif self.mtlprompt.PROMPT.SPATIAL.ENCODER:
+            x, x_downsample, shared_prompt = self.backbone(x)
+            shared_ft = {
+                task: [] for task in self.tasks
+            }
+            for tasks_shared_rep in x_downsample:
+                for task, shared_rep in tasks_shared_rep.items():
+                    shared_ft[task].append(shared_rep)
+            for task in self.tasks:
+                shared_ft[task] = self.downsampler[task](shared_ft[task])
+            result = self.decoders(shared_ft)
+
+
+        elif self.mtlprompt.ENABLED and self.mtlprompt.DECODER_TYPE == "baseline": # Baseline
+            x, x_downsample, shared_prompt = self.backbone(x)
+            shared_ft = {
+                task: [] for task in self.tasks
+            }
+            for tasks_shared_rep in x_downsample:
+                for task, shared_rep in tasks_shared_rep.items():
+                    shared_ft[task].append(shared_rep)
+            for task in self.tasks:
+                shared_ft[task] = self.downsampler[task](shared_ft[task])
+
+            result = self.decoders(shared_ft)
+
 
         else :
             shared_representation = self.backbone(x)

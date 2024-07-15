@@ -28,11 +28,15 @@ def mark_only_mtl_as_trainable(model: nn.Module, freeze_patch_embed: bool = Fals
     def downsample_reduction_filter(
         key): return not freeze_downsample_reduction and "downsample.reduction" in key
 
+    def downsample_filter(key):
+        return not freeze_downsample_reduction and "downsample" in key
+
     def relative_position_bias_filter(
         key): return not free_relative_bias and "relative_position_bias_table" in key
 
     def all_filters(key):
-        return prompt_filter(key) or decoder_filter(key) or heads_filter(key) or fusion_filter(key) or patch_embed_filter(key) or norm_filter(key) or downsample_reduction_filter(key) or relative_position_bias_filter(key)
+        return (prompt_filter(key) or decoder_filter(key) or heads_filter(key) or fusion_filter(key) or patch_embed_filter(key) or norm_filter(key) or downsample_reduction_filter(key)
+                or downsample_filter(key) or relative_position_bias_filter(key))
 
     print(f"MTLprompt Freeze patch_embed: {freeze_patch_embed}")
     print(f"MTLprompt Freeze norm: {freeze_norm}")

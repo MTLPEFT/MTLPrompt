@@ -266,15 +266,16 @@ def main(config):
             # TODO : mark_only_MTLprompt_as_trainable
             from models.MTLprompt import mark_only_mtl_as_trainable
             mark_only_mtl_as_trainable(model,
-                                       freeze_patch_embed = True,
-                                       freeze_norm = True,
-                                       free_relative_bias = True,
+                                       freeze_patch_embed = config.TRAIN.FREEZE_PATCH_EMBED,
+                                       freeze_norm = config.TRAIN.FREEZE_LAYER_NORM,
+                                       free_relative_bias = config.TRAIN.FREEZE_RELATIVE_POSITION_BIAS,
+                                       freeze_downsample_reduction=True if config.MODEL.MTLORA.DOWNSAMPLER_ENABLED else config.TRAIN.FREEZE_DOWNSAMPLE_REDUCTION
                                        )
         else:
             print("Marking all layers as trainable")
 
         from models.MTLprompt import mtlprompt_detail
-        mtlprompt_detail(model, detail=False)
+        mtlprompt_detail(model, detail=True)
 
     logger.info("Start training")
     start_time = time.perf_counter()

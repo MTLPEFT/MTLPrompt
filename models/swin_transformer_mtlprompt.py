@@ -344,13 +344,11 @@ class PromptedPatchMerging(PatchMerging):
        # self.norm_prompt = norm_layer(2*dim)
 
     def upsample_prompt(self, prompt_emb):
-
         prompt_emb = torch.cat(
             (prompt_emb, prompt_emb, prompt_emb, prompt_emb), dim=-1)
         return prompt_emb
 
-
-    def forward(self, x):
+    def forward(self, x, shared_prompt=None):
         """
         x: B, H*W, C
         """
@@ -361,6 +359,7 @@ class PromptedPatchMerging(PatchMerging):
         prompt_emb = x[:, :self.num_prompts, :]
         x = x[:, self.num_prompts:, :]
         L = L - self.num_prompts
+
         prompt_emb = self.upsample_prompt(prompt_emb)
 
         assert L == H * W, "input feature has wrong size, should be {}, got {}".format(H*W, L)
@@ -381,6 +380,14 @@ class PromptedPatchMerging(PatchMerging):
 
         x = self.norm(x)
         x = self.reduction(x)
+
+        if shared_prompt is not None:
+
+            shared_prompt = self.upsample_prompt(shared_prompt)
+            shared_prompt = self.norm(shared_prompt)
+            shared_prompt = self.reduction(shared_prompt)
+
+            return x[:, self.num_prompts:, :], x[:, :self.num_prompts, :], shared_prompt
 
         return x[:, self.num_prompts:, :], x[:, :self.num_prompts, :]
 
@@ -914,6 +921,14 @@ class PromptedSwinUTransformer(MTLSwinUNet):
                 1, self.shared_prompt_len, embed_dim))
             trunc_normal_(self.prompt_embeddings, mean=1., std=1.)
 
+        if cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENCODER:
+            self.spa_prompt_encoder = cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENCODER
+            self.spa_prompt_len = cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.LEN
+            self.spa_prompt = {}
+            for task in self.tasks:
+                self.spa_prompt[task] = nn.Parameter(torch.zeros(1, self.spa_prompt_len, embed_dim)).to(device)
+                trunc_normal_(self.spa_prompt[task], mean=1., std=1.)
+
         # stochastic depth
         dpr_encoder = [x.item() for x in
                        torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
@@ -989,10 +1004,20 @@ class PromptedSwinUTransformer(MTLSwinUNet):
 
         elif self.cfg.MODEL.MTLPROMPT.PROMPT.SHARED.TYPE == 'SHALLOW':
             mtl_prompt_embd = self.prompt_embeddings
-            for i, layer in enumerate(self.layers):
-                mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
-                x, mtl_prompt_embd = layer(x, mtl_prompt_embd)
-                x_downsample.append(x)
+
+            if self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENCODER:
+                spa_prompt = self.spa_prompt
+
+                for i, layer in enumerate(self.layers):
+                    mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
+                    x, out, mtl_prompt_embd, spa_prompt = layer(x, mtl_prompt_embd, spa_prompt)
+                    x_downsample.append(out)
+
+            else:
+                for i, layer in enumerate(self.layers):
+                    mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
+                    x, mtl_prompt_embd = layer(x, mtl_prompt_embd)
+                    x_downsample.append(x)
 
         return x, x_downsample, mtl_prompt_embd    # 이 부분에서 downsamplling 값 가져오기
 
@@ -1014,13 +1039,20 @@ class PromptedSwinUTransformer(MTLSwinUNet):
 
         return x
 
-#### 여기 up 부분부터!
     def forward(self, x):   # x : B, C, H, W // task_id : B * Task
 
         # Forward through the encoder layers
         x, x_downsample, shared_prompt = self.forward_features(x)
-        return x, x_downsample, shared_prompt
 
+        # if self.cfg.MODEL.MTLPROMPT.DECODER_TYPE == 'baseline':
+        #     x_list = []
+        #     for t in x_downsample:
+        #         x_dict = {task: t for task in self.tasks}
+        #         x_list.append(x_dict)
+        #
+        #     return x, x_list, shared_prompt
+
+        return x, x_downsample, shared_prompt
 
     def flops(self):
         flops = 0
@@ -1044,13 +1076,6 @@ class PromptedSwinUTransformer(MTLSwinUNet):
             else unique_task_ids.numpy()
         )
         for unique_task_id in unique_task_ids_list:
-            task_type[task_type == unique_task_id] = self.task_id_2_task_idx[
-                unique_task_id
-            ]
+            task_type[task_type == unique_task_id] = self.task_id_2_task_idx[unique_task_id]
         return task_type, unique_task_ids_list
-
-
-
-
-
 
