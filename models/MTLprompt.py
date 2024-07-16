@@ -52,9 +52,10 @@ def decoder_filter(key: str, value: Any) -> bool:
     return "decoder" in key
 
 
-def mtlprompt_detail(model : nn.Module, detail=False) -> None:
+def mtlprompt_detail(model : nn.Module, detail=False, save=False) -> None:
     """
     detail : model detail info about gradrequire
+    save : save parameter info as csv
     """
 
     trainable_params = sum(p.numel()
@@ -93,3 +94,25 @@ def mtlprompt_detail(model : nn.Module, detail=False) -> None:
     if detail:
         for name, p in model.named_parameters():
             print(f"{name} : {p.requires_grad}")
+
+    if save:
+        import pandas as pd
+        param_data = []
+        for name, p in model.named_parameters():
+            param_data.append({"Name": name, "Num of params": p.numel(), "requires_grad": p.requires_grad})
+        # Pandas DataFrame에 데이터를 저장합니다.
+        df = pd.DataFrame(param_data)
+
+        # DataFrame을 Excel 또는 CSV 파일로 내보냅니다.
+        # CSV 파일로 저장
+        df.to_csv("MTLprompt_model_parameters.csv", index=False)
+
+
+
+
+
+
+
+
+
+

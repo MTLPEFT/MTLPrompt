@@ -535,23 +535,38 @@ class BasicLayer(nn.Module):
             x_task = {}
             x_ori = x
 
-            x = torch.cat((prompt_emb, x_ori), dim=1)
-            x, prompt_emb = self.blocks[-1](x)
-            if self.downsample is not None:
-                x = torch.cat((prompt_emb, x), dim=1)
-                x, prompt_emb = self.downsample(x)
-
-            spa_prompt_emb = {}
-            for task in self.tasks:
-                spa_prompt_emb[task] = spa_prompt[task].expand(B, -1, -1)
-
-                x_task[task] = torch.cat((spa_prompt_emb[task], x_ori), dim=1)
-                out[task], spa_prompt_emb[task] = self.blocks[-1](x_task[task])
-
+            if self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "prepend":
+                x = torch.cat((prompt_emb, x_ori), dim=1)
+                x, prompt_emb = self.blocks[-1](x)
                 if self.downsample is not None:
-                    out[task] = torch.cat((spa_prompt_emb[task], out[task]), dim=1)
-                    out[task], spa_prompt_emb[task] = self.downsample(out[task])
-                    out[task] = out[task] + x
+                    x = torch.cat((prompt_emb, x), dim=1)
+                    x, prompt_emb = self.downsample(x)
+
+                spa_prompt_emb = {}
+                for task in self.tasks:
+                    spa_prompt_emb[task] = spa_prompt[task].expand(B, -1, -1)
+                    x_task[task] = torch.cat((spa_prompt_emb[task], x_ori), dim=1)
+                    out[task], spa_prompt_emb[task] = self.blocks[-1](x_task[task])
+
+                    if self.downsample is not None:
+                        out[task] = torch.cat((spa_prompt_emb[task], out[task]), dim=1)
+                        out[task], spa_prompt_emb[task] = self.downsample(out[task])
+                        out[task] = out[task] + x
+
+            elif self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "low-rank":
+                # x = torch.cat((prompt_emb, x_ori), dim=1)
+                # x, prompt_emb = self.blocks[-1](x)
+                # if self.downsample is not None:
+                #     x = torch.cat((prompt_emb, x), dim=1)
+                #     x, prompt_emb = self.downsample(x)
+
+                spa_prompt_emb = {}
+                for task in self.tasks:
+                    spa_prompt_emb[task] = spa_prompt[task].expand(B, -1, -1) @ prompt_emb
+                    x_task[task] = x + spa_prompt_emb[task]
+
+
+
 
             return x, out, prompt_emb, spa_prompt_emb
 

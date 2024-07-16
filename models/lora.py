@@ -661,7 +661,7 @@ def map_old_state_dict_weights(state_dict: Dict, mapping: Mapping, prefix: str, 
 
 
 
-def lora_detail(model : nn.Module) -> None:
+def lora_detail(model : nn.Module, detail=False, save=False) -> None:
     """
     detail : model detail info about gradrequire
     """
@@ -675,11 +675,12 @@ def lora_detail(model : nn.Module) -> None:
     decoder_params = sum(p.numel() for name, p in model.named_parameters()
                          if 'backbone' not in name)
 
-    for name, p in model.named_parameters():
-        print(f"{name} : {p.numel()}")
+    if detail:
+        for name, p in model.named_parameters():
+            print(f"{name} : {p.numel()}")
 
-    for name, p in model.named_parameters():
-        print(f"{name} : {p.requires_grad}")
+        for name, p in model.named_parameters():
+            print(f"{name} : {p.requires_grad}")
 
     print(f"""
     Number of trainable params: {trainable_params:,}
@@ -689,3 +690,15 @@ def lora_detail(model : nn.Module) -> None:
     Total params:               {total_model_params:,} (trainable ratio: {trainable_params / total_model_params * 100:2.2f}%)
     Total params without LoRA:  {total_model_params_without_lora:,} (trainable ratio: {trainable_params / total_model_params_without_lora * 100:2.2f}%)
     """)
+
+    if save:
+        import pandas as pd
+        param_data = []
+        for name, p in model.named_parameters():
+            param_data.append({"Name": name, "Num of params": p.numel(), "requires_grad": p.requires_grad})
+        # Pandas DataFrame에 데이터를 저장합니다.
+        df = pd.DataFrame(param_data)
+
+        # DataFrame을 Excel 또는 CSV 파일로 내보냅니다.
+        # CSV 파일로 저장
+        df.to_csv("MTLoRA_model_parameters.csv", index=False)

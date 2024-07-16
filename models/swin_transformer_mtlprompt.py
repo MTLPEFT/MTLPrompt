@@ -925,9 +925,15 @@ class PromptedSwinUTransformer(MTLSwinUNet):
             self.spa_prompt_encoder = cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENCODER
             self.spa_prompt_len = cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.LEN
             self.spa_prompt = {}
-            for task in self.tasks:
-                self.spa_prompt[task] = nn.Parameter(torch.zeros(1, self.spa_prompt_len, embed_dim)).to(device)
-                trunc_normal_(self.spa_prompt[task], mean=1., std=1.)
+            if cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "prepend":
+                for task in self.tasks:
+                    self.spa_prompt[task] = nn.Parameter(torch.zeros(1, self.spa_prompt_len, embed_dim)).to(device)
+                    trunc_normal_(self.spa_prompt[task], mean=1., std=1.)
+
+            elif cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "low-rank":
+                for task in self.tasks:
+                    self.spa_prompt[task] = nn.Parameter(torch.zeros(1, self.patches_resolution, self.shared_prompt_len)).to(device)
+                    trunc_normal_(self.spa_prompt[task], mean=1., std=1.)
 
         # stochastic depth
         dpr_encoder = [x.item() for x in
@@ -1007,12 +1013,10 @@ class PromptedSwinUTransformer(MTLSwinUNet):
 
             if self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENCODER:
                 spa_prompt = self.spa_prompt
-
                 for i, layer in enumerate(self.layers):
                     mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
                     x, out, mtl_prompt_embd, spa_prompt = layer(x, mtl_prompt_embd, spa_prompt)
                     x_downsample.append(out)
-
             else:
                 for i, layer in enumerate(self.layers):
                     mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
@@ -1040,18 +1044,8 @@ class PromptedSwinUTransformer(MTLSwinUNet):
         return x
 
     def forward(self, x):   # x : B, C, H, W // task_id : B * Task
-
         # Forward through the encoder layers
         x, x_downsample, shared_prompt = self.forward_features(x)
-
-        # if self.cfg.MODEL.MTLPROMPT.DECODER_TYPE == 'baseline':
-        #     x_list = []
-        #     for t in x_downsample:
-        #         x_dict = {task: t for task in self.tasks}
-        #         x_list.append(x_dict)
-        #
-        #     return x, x_list, shared_prompt
-
         return x, x_downsample, shared_prompt
 
     def flops(self):
@@ -1064,7 +1058,6 @@ class PromptedSwinUTransformer(MTLSwinUNet):
             self.patches_resolution[1] // (2 ** self.num_layers)
         flops += self.num_features * self.num_classes
         return flops
-
 
     def _create_task_type(self, task_id):
         # Check the task ids and create filter for each image
@@ -1079,3 +1072,29 @@ class PromptedSwinUTransformer(MTLSwinUNet):
             task_type[task_type == unique_task_id] = self.task_id_2_task_idx[unique_task_id]
         return task_type, unique_task_ids_list
 
+
+# FiLM for Modulation
+class FiLM(nn.Module):
+    """ Feature-wise Linear Modulation (FiLM) layer"""
+    def __init__(self, input_size, output_size, num_film_layers=1, layer_norm=False):
+        """
+        :param input_size: feature size of x_cond
+        :param output_size: feature size of x_to_film
+        :param layer_norm: true or false
+        """
+        super(FiLM, self).__init__()
+        self.input_size = input_size
+        self.output_size = output_size
+        self.num_film_layers = num_film_layers
+        self.layer_norm = nn.LayerNorm(output_size) if layer_norm else None
+        film_output_size = self.output_size * num_film_layers * 2
+        self.gb_weights = nn.Linear(self.input_size, film_output_size)
+        self.gb_weights.bias.data.fill_(0)
+
+    def forward(self, x_cond, x_to_film):
+        gb = self.gb_weights(x_cond).unsqueeze(1)
+        gamma, beta = torch.chunk(gb, 2, dim=-1)
+        out = (1 + gamma) * x_to_film + beta
+        if self.layer_norm is not None:
+            out = self.layer_norm(out)
+        return out

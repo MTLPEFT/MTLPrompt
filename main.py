@@ -258,7 +258,7 @@ def main(config):
             print("Marking all layers as trainable")
 
         from models.lora import lora_detail
-        lora_detail(model)
+        lora_detail(model, save=False)
 
     elif config.MODEL.MTLPROMPT.ENABLED:
         if config.MODEL.MTLPROMPT.FREEZE_PRETRAINED:
@@ -275,7 +275,7 @@ def main(config):
             print("Marking all layers as trainable")
 
         from models.MTLprompt import mtlprompt_detail
-        mtlprompt_detail(model, detail=True)
+        mtlprompt_detail(model, detail=False, save=False)
 
     logger.info("Start training")
     start_time = time.perf_counter()
