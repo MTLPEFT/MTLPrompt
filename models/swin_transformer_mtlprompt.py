@@ -18,7 +18,7 @@ class PromptedWindowAttention(WindowAttention):
             attn_drop, proj_drop)
         self.num_prompts = num_prompts
 
-    def forward(self, x, mask=None):
+    def forward(self, x, mask=None, prompt_location=None):
         """
         Args:
             x: input features with shape of (num_windows*B, N, C)
@@ -35,17 +35,18 @@ class PromptedWindowAttention(WindowAttention):
             self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
         relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
 
-        _C, _H, _W = relative_position_bias.shape
+        if self.prompt_location == "prepend":
+            # expand relative_position_bias
+            _C, _H, _W = relative_position_bias.shape
 
-        relative_position_bias = torch.cat((
-            torch.zeros(_C, self.num_prompts, _W, device=attn.device),
-            relative_position_bias
-        ), dim=1)
-        relative_position_bias = torch.cat((
-            torch.zeros(_C, _H + self.num_prompts, self.num_prompts, device=attn.device),
-            relative_position_bias
-        ), dim=-1)
-
+            relative_position_bias = torch.cat((
+                torch.zeros(_C, self.num_prompts, _W, device=attn.device),
+                relative_position_bias
+                ), dim=1)
+            relative_position_bias = torch.cat((
+                torch.zeros(_C, _H + self.num_prompts, self.num_prompts, device=attn.device),
+                relative_position_bias
+                ), dim=-1)
         attn = attn + relative_position_bias.unsqueeze(0)
 
         if mask is not None:
@@ -78,143 +79,6 @@ class PromptedWindowAttention(WindowAttention):
         return x
 
 
-class ChannelPromptedSwinTransformerBlock(SwinTransformerBlock):
-    def __init__(self, num_prompts, dim, input_resolution,
-            num_heads, window_size=7, shift_size=0, mlp_ratio=4., qkv_bias=True,
-            qk_scale=None, drop=0., attn_drop=0., drop_path=0., act_layer=nn.GELU,
-            norm_layer=nn.LayerNorm, num_chan_prompts=None, cfg=None
-            ):
-        super(ChannelPromptedSwinTransformerBlock, self).__init__(
-            dim, input_resolution, num_heads, window_size,
-            shift_size, mlp_ratio, qkv_bias, qk_scale, drop,
-            attn_drop, drop_path, act_layer, norm_layer
-        )
-
-        pixel_no = int(input_resolution[0] * input_resolution[1])
-
-        self.dim = dim
-
-        self.num_chan_prompts = num_prompts
-
-        self.chan_embed_dim = cfg.MODEL.MTLPROMPT.PROMPT.CHANNEL.CHAN_EMBED_DIM
-
-        # channel-wise attention
-        self.chan_nheads = cfg.MODEL.MTLPROMPT.PROMPT.CHANNEL.CHAN_N_HEADS
-        self.attn_drop = nn.Dropout(0)
-
-        self.token_trans = nn.Linear(pixel_no, self.chan_embed_dim)
-
-        self.token_trans1 = nn.Linear(self.chan_embed_dim, pixel_no)
-
-        self.chan_norm = nn.BatchNorm2d(self.chan_embed_dim)
-
-        self.attn = PromptedWindowAttention(
-            num_chan_prompts,
-            self.chan_embed_dim, window_size=to_2tuple(self.window_size),
-            num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale,
-            attn_drop=attn_drop, proj_drop=drop)
-
-    # TODO Channel prompts 로 수정
-    def forward(self, x, chan_prompt):
-
-        H, W = self.input_resolution
-        B, L, C = x.shape
-        shortcut = x
-        x = self.norm1(x)
-
-        assert L == H * W, "input feature has wrong size, should be {}, got {}".format(H * W, L)
-
-        x = x.view(B, H, W, C)
-
-        OH, OW = H, W
-        if self.pad_size:
-            import torch.nn.functional as F
-            pad_l, pad_t, pad_b, pad_r = 0, 0, self.pad_size[0], self.pad_size[1]
-            x = F.pad(x, (0, 0, pad_l, pad_r, pad_t, pad_b))
-            H = OH + pad_b
-            W = OW + pad_r
-
-        # cyclic shift
-        if self.shift_size > 0:
-            shifted_x = torch.roll(
-                x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
-        else:
-            shifted_x = x
-
-        # partition windows --> nW*B, window_size, window_size, C
-        x_windows = window_partition(shifted_x, self.window_size)
-        # nW*B, window_size*window_size, C
-        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)
-
-        # reverse cyclic shift
-        if self.shift_size > 0:
-            x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
-        else:
-            x = shifted_x
-
-        # un-pad
-        if self.pad_size:
-            x = x[:, :OH, :OW, :].contiguous()
-
-        x = x.view(B, OH * OW, C)
-
-        chan_x = x
-        chan_x = chan_x.permute(0, 2, 1)  # (B, C, HxW)
-
-        # add back the prompt for attn for parralel-based prompts
-        # nW*B, num_prompts + window_size*window_size, C
-        num_windows = int(x_windows.shape[0] / B)
-
-        chan_prompt = chan_prompt.unsqueeze(0)
-        chan_prompt = chan_prompt.expand(num_windows, -1, -1, -1)
-        chan_prompt = chan_prompt.reshape((-1, self.num_chan_prompts, C))
-
-
-
-        x_windows = torch.cat((chan_prompt, x_windows), dim=2)
-
-        attn_windows = self.attn(x_windows, mask=self.attn_mask)
-
-        # change input size
-        prompt_emb = attn_windows[:, :self.num_prompts, :]
-        attn_windows = attn_windows[:, self.num_prompts:, :]
-        # change prompt_embs's shape:
-        # nW*B, num_prompts, C - B, num_prompts, C
-        prompt_emb = prompt_emb.view(-1, B, self.num_prompts, C)
-        prompt_emb = prompt_emb.mean(0)
-
-        # merge windows
-        attn_windows = attn_windows.view(
-            -1, self.window_size, self.window_size, C)
-        shifted_x = window_reverse(
-            attn_windows, self.window_size, H, W)  # B H W C
-
-        # reverse cyclic shift
-        if self.shift_size > 0:
-            x = torch.roll(
-                shifted_x,
-                shifts=(self.shift_size, self.shift_size),
-                dims=(1, 2)
-            )
-        else:
-            x = shifted_x
-        # un-pad
-        if self.pad_size:
-            x = x[:, :OH, :OW, :].contiguous()
-
-        # x = x.view(B, H * W, C)
-        x = x.view(B, OH * OW, C)
-
-        # add the prompt back:
-        x = torch.cat((prompt_emb, x), dim=1)
-
-        # FFN
-        x = shortcut + self.drop_path(x)
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
-
-        return x[:, self.num_prompts:, :], x[:, :self.num_prompts, :]
-
-
 class PromptedSwinTransformerBlock(SwinTransformerBlock):
     def __init__(
             self, num_prompts, dim, input_resolution,
@@ -236,15 +100,17 @@ class PromptedSwinTransformerBlock(SwinTransformerBlock):
                 attn_drop=attn_drop, proj_drop=drop)
 
 
-    def forward(self, x): # Prompt + Patch
+    def forward(self, x, prompt_location=None): # Prompt + Patch
         H, W = self.input_resolution
         B, L, C = x.shape
         shortcut = x
         x = self.norm1(x)
 
-        prompt_emb = x[:, :self.num_prompts, :]
-        x = x[:, self.num_prompts:, :]
-        L = L - self.num_prompts
+        if self.prompt_location == "prepend":
+            # change input size
+            prompt_emb = x[:, :self.num_prompts, :]
+            x = x[:, self.num_prompts:, :]
+            L = L - self.num_prompts
 
         assert L == H * W, "input feature has wrong size, should be {}, got {}".format(H * W, L)
 
@@ -277,20 +143,25 @@ class PromptedSwinTransformerBlock(SwinTransformerBlock):
         # nW*B, num_prompts + window_size*window_size, C
         num_windows = int(x_windows.shape[0] / B)
 
-        prompt_emb = prompt_emb.unsqueeze(0)
-        prompt_emb = prompt_emb.expand(num_windows, -1, -1, -1)
-        prompt_emb = prompt_emb.reshape((-1, self.num_prompts, C))
-        x_windows = torch.cat((prompt_emb, x_windows), dim=1)
+        if self.prompt_location == "prepend":
+            # expand prompts_embs
+            # B, num_prompts, C --> nW*B, num_prompts, C
+            prompt_emb = prompt_emb.unsqueeze(0)
+            prompt_emb = prompt_emb.expand(num_windows, -1, -1, -1)
+            prompt_emb = prompt_emb.reshape((-1, self.num_prompts, C))
+            x_windows = torch.cat((prompt_emb, x_windows), dim=1)
 
         attn_windows = self.attn(x_windows, mask=self.attn_mask)
 
-        # change input size
-        prompt_emb = attn_windows[:, :self.num_prompts, :]
-        attn_windows = attn_windows[:, self.num_prompts:, :]
-        # change prompt_embs's shape:
-        # nW*B, num_prompts, C - B, num_prompts, C
-        prompt_emb = prompt_emb.view(-1, B, self.num_prompts, C)
-        prompt_emb = prompt_emb.mean(0)
+        # seperate prompt embs --> nW*B, num_prompts, C
+        if self.prompt_location == "prepend":
+            # change input size
+            prompt_emb = attn_windows[:, :self.num_prompts, :]
+            attn_windows = attn_windows[:, self.num_prompts:, :]
+            # change prompt_embs's shape:
+            # nW*B, num_prompts, C - B, num_prompts, C
+            prompt_emb = prompt_emb.view(-1, B, self.num_prompts, C)
+            prompt_emb = prompt_emb.mean(0)
 
         # merge windows
         attn_windows = attn_windows.view(
@@ -315,7 +186,8 @@ class PromptedSwinTransformerBlock(SwinTransformerBlock):
         x = x.view(B, OH * OW, C)
 
         # add the prompt back:
-        x = torch.cat((prompt_emb, x), dim=1)
+        if self.prompt_location == "prepend":
+            x = torch.cat((prompt_emb, x), dim=1)
 
         # FFN
         x = shortcut + self.drop_path(x)
@@ -348,7 +220,7 @@ class PromptedPatchMerging(PatchMerging):
             (prompt_emb, prompt_emb, prompt_emb, prompt_emb), dim=-1)
         return prompt_emb
 
-    def forward(self, x, shared_prompt=None):
+    def forward(self, x, location=None):
         """
         x: B, H*W, C
         """
@@ -356,11 +228,11 @@ class PromptedPatchMerging(PatchMerging):
         B, L, C = x.shape
 
         # change input size
-        prompt_emb = x[:, :self.num_prompts, :]
-        x = x[:, self.num_prompts:, :]
-        L = L - self.num_prompts
-
-        prompt_emb = self.upsample_prompt(prompt_emb)
+        if location == "prepend" :
+            prompt_emb = x[:, :self.num_prompts, :]
+            x = x[:, self.num_prompts:, :]
+            L = L - self.num_prompts
+            prompt_emb = self.upsample_prompt(prompt_emb)
 
         assert L == H * W, "input feature has wrong size, should be {}, got {}".format(H*W, L)
         assert H % 2 == 0 and W % 2 == 0, f"x size ({H}*{W}) are not even."
@@ -376,20 +248,16 @@ class PromptedPatchMerging(PatchMerging):
         x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
         x = x.view(B, -1, 4 * C)  # B H/2*W/2 4*C
 
-        x = torch.cat((prompt_emb, x), dim=1)
+        if location == "prepend" :
+            x = torch.cat((prompt_emb, x), dim=1)
+            x = self.norm(x)
+            x = self.reduction(x)
+            return x[:, self.num_prompts:, :], x[:, :self.num_prompts, :]
 
-        x = self.norm(x)
-        x = self.reduction(x)
-
-        if shared_prompt is not None:
-
-            shared_prompt = self.upsample_prompt(shared_prompt)
-            shared_prompt = self.norm(shared_prompt)
-            shared_prompt = self.reduction(shared_prompt)
-
-            return x[:, self.num_prompts:, :], x[:, :self.num_prompts, :], shared_prompt
-
-        return x[:, self.num_prompts:, :], x[:, :self.num_prompts, :]
+        else :
+            x = self.norm(x)
+            x = self.reduction(x)
+            return x
 
 
 class PromptedPatchExpand(PatchExpand):
@@ -677,34 +545,34 @@ class Decoder_PromptedSwinUTransformer(Decoder_MTLdSwinUTransformer):
                                               self.num_layers - 1 - i_layer))) if i_layer > 0 else nn.Identity()
             self.decoder_layers_concat_back_dim.append(concat_linear)
 
-            if cfg.MODEL.MTLPROMPT.PROMPT.CHANNEL.ENABLED:
-                self.decoder_channel_prompt_attn = nn.ModuleDict()
-
-                for task in tasks:
-                    chan_attn_layer = BasicLayer_up(dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-                                                    input_resolution=(
-                                                        self.patches_resolution[0] // (
-                                                                    2 ** (self.num_layers - 1 - i_layer)),
-                                                        self.patches_resolution[1] // (
-                                                                    2 ** (self.num_layers - 1 - i_layer))),
-                                                    depth=depths_decoder[(self.num_layers - 1 - i_layer)],
-                                                    num_heads=num_heads[(self.num_layers - 1 - i_layer)],
-                                                    window_size=window_size,
-                                                    mlp_ratio=self.mlp_ratio,
-                                                    qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                                    drop=drop_rate, attn_drop=attn_drop_rate,
-                                                    drop_path=dpr_decoder[
-                                                              sum(depths_decoder[:(self.num_layers - 1 - i_layer)]):sum(
-                                                                  depths_decoder[
-                                                                  :(self.num_layers - 1 - i_layer) + 1])],
-                                                    norm_layer=norm_layer,
-                                                    upsample=PromptedPatchExpand if (
-                                                                i_layer < self.num_layers - 1) else None,
-                                                    use_checkpoint=use_checkpoint,
-                                                    block_module=ChannelPromptedSwinTransformerBlock,
-                                                    num_prompts=self.cfg.MODEL.MTLPROMPT.PROMPT.CHANNEL.LEN,
-                                                    cfg=cfg)
-                    self.decoder_channel_prompt_attn[task] = chan_attn_layer
+            # if cfg.MODEL.MTLPROMPT.PROMPT.CHANNEL.ENABLED:
+            #     self.decoder_channel_prompt_attn = nn.ModuleDict()
+            #
+            #     for task in tasks:
+            #         chan_attn_layer = BasicLayer_up(dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
+            #                                         input_resolution=(
+            #                                             self.patches_resolution[0] // (
+            #                                                         2 ** (self.num_layers - 1 - i_layer)),
+            #                                             self.patches_resolution[1] // (
+            #                                                         2 ** (self.num_layers - 1 - i_layer))),
+            #                                         depth=depths_decoder[(self.num_layers - 1 - i_layer)],
+            #                                         num_heads=num_heads[(self.num_layers - 1 - i_layer)],
+            #                                         window_size=window_size,
+            #                                         mlp_ratio=self.mlp_ratio,
+            #                                         qkv_bias=qkv_bias, qk_scale=qk_scale,
+            #                                         drop=drop_rate, attn_drop=attn_drop_rate,
+            #                                         drop_path=dpr_decoder[
+            #                                                   sum(depths_decoder[:(self.num_layers - 1 - i_layer)]):sum(
+            #                                                       depths_decoder[
+            #                                                       :(self.num_layers - 1 - i_layer) + 1])],
+            #                                         norm_layer=norm_layer,
+            #                                         upsample=PromptedPatchExpand if (
+            #                                                     i_layer < self.num_layers - 1) else None,
+            #                                         use_checkpoint=use_checkpoint,
+            #                                         block_module=ChannelPromptedSwinTransformerBlock,
+            #                                         num_prompts=self.cfg.MODEL.MTLPROMPT.PROMPT.CHANNEL.LEN,
+            #                                         cfg=cfg)
+            #         self.decoder_channel_prompt_attn[task] = chan_attn_layer
 
         else:
             self.decoder_layers_layers_up = nn.ModuleDict()  # decoder layer 에서 upsample Transformer
@@ -924,16 +792,34 @@ class PromptedSwinUTransformer(MTLSwinUNet):
         if cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENCODER:
             self.spa_prompt_encoder = cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENCODER
             self.spa_prompt_len = cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.LEN
-            self.spa_prompt = {}
+
             if cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "prepend":
+                self.spa_prompt = {}
                 for task in self.tasks:
                     self.spa_prompt[task] = nn.Parameter(torch.zeros(1, self.spa_prompt_len, embed_dim)).to(device)
                     trunc_normal_(self.spa_prompt[task], mean=1., std=1.)
 
-            elif cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "low-rank":
+            elif cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "low-rank":  # TODO : Make Deep Prompting
+                self.spa_prompt_embeddings_0 = {}
+                self.spa_prompt_embeddings_1 = {}
+                self.spa_prompt_embeddings_2 = {}
+                self.spa_prompt_embeddings_3 = {}
+
                 for task in self.tasks:
-                    self.spa_prompt[task] = nn.Parameter(torch.zeros(1, self.patches_resolution, self.shared_prompt_len)).to(device)
-                    trunc_normal_(self.spa_prompt[task], mean=1., std=1.)
+                    self.spa_prompt_embeddings_0[task] = nn.Parameter(
+                        torch.zeros(1, self.patches_resolution[0] * self.patches_resolution[1], self.shared_prompt_len)).to(device)
+                    trunc_normal_(self.spa_prompt_embeddings_0[task], mean=1., std=1.)
+                    self.spa_prompt_embeddings_1[task] = nn.Parameter(
+                        torch.zeros(1, self.patches_resolution[0]//2 * self.patches_resolution[1]//2, self.shared_prompt_len)).to(device)
+                    trunc_normal_(self.spa_prompt_embeddings_1[task], mean=1., std=1.)
+                    self.spa_prompt_embeddings_2[task] = nn.Parameter(
+                        torch.zeros(1, self.patches_resolution[0]//4 * self.patches_resolution[1]//4, self.shared_prompt_len)).to(device)
+                    trunc_normal_(self.spa_prompt_embeddings_2[task], mean=1., std=1.)
+                    self.spa_prompt_embeddings_3[task] = nn.Parameter(
+                        torch.zeros(1, self.patches_resolution[0]//8 * self.patches_resolution[1]//8, self.shared_prompt_len)).to(device)
+                    trunc_normal_(self.spa_prompt_embeddings_3[task], mean=1., std=1.)
+
+                self.spa_prompt = [self.spa_prompt_embeddings_0, self.spa_prompt_embeddings_1, self.spa_prompt_embeddings_2, self.spa_prompt_embeddings_3]
 
         # stochastic depth
         dpr_encoder = [x.item() for x in
@@ -1017,6 +903,7 @@ class PromptedSwinUTransformer(MTLSwinUNet):
                     mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
                     x, out, mtl_prompt_embd, spa_prompt = layer(x, mtl_prompt_embd, spa_prompt)
                     x_downsample.append(out)
+
             else:
                 for i, layer in enumerate(self.layers):
                     mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)

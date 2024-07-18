@@ -866,11 +866,13 @@ def get_transformations(db_name, config):
     return transforms_tr, transforms_ts
 
 
-def get_mtl_train_dataloader(config, dataset):
+def get_mtl_train_dataloader(config, dataset, sampler=None):
     """ Return the train dataloader """
+    # Sampler was added for DDP, For sampler, shuffle must be False
 
-    trainloader = DataLoader(dataset, batch_size=config.DATA.BATCH_SIZE, shuffle=True, drop_last=True,
-                             num_workers=config.DATA.NUM_WORKERS, collate_fn=collate_mil, pin_memory=config.DATA.PIN_MEMORY)
+    trainloader = DataLoader(dataset, batch_size=config.DATA.BATCH_SIZE, shuffle=False, drop_last=True,
+                             num_workers=config.DATA.NUM_WORKERS, collate_fn=collate_mil, pin_memory=config.DATA.PIN_MEMORY,
+                             sampler = sampler)
     return trainloader
 
 

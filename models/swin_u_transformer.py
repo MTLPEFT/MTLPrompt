@@ -529,7 +529,7 @@ class BasicLayer(nn.Module):
             for i in range(num_blocks - 1):
                 prompt_emb = mtl_prompt_embd.expand(B, -1, -1)
                 x = torch.cat((prompt_emb, x), dim=1)
-                x, prompt_emb = self.blocks[i](x)
+                x, prompt_emb = self.blocks[i](x,  prompt_location="prepend")
 
             out = {}
             x_task = {}
@@ -537,7 +537,6 @@ class BasicLayer(nn.Module):
 
             if self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "prepend":
                 x = torch.cat((prompt_emb, x_ori), dim=1)
-                x, prompt_emb = self.blocks[-1](x)
                 if self.downsample is not None:
                     x = torch.cat((prompt_emb, x), dim=1)
                     x, prompt_emb = self.downsample(x)
@@ -553,18 +552,23 @@ class BasicLayer(nn.Module):
                         out[task], spa_prompt_emb[task] = self.downsample(out[task])
                         out[task] = out[task] + x
 
+            # TODO : List 활용
             elif self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "low-rank":
-                # x = torch.cat((prompt_emb, x_ori), dim=1)
-                # x, prompt_emb = self.blocks[-1](x)
-                # if self.downsample is not None:
-                #     x = torch.cat((prompt_emb, x), dim=1)
-                #     x, prompt_emb = self.downsample(x)
-
-                spa_prompt_emb = {}
-                for task in self.tasks:
-                    spa_prompt_emb[task] = spa_prompt[task].expand(B, -1, -1) @ prompt_emb
-                    x_task[task] = x + spa_prompt_emb[task]
-
+                """
+                for layer, mtl_prompt_embd in zip(self.layers, [self.deep_prompt_embeddings_0, self.deep_prompt_embeddings_1,
+                                                self.deep_prompt_embeddings_2, self.deep_prompt_embeddings_3]):
+                x_downsample.append(x)
+                mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
+                x, _ = layer(x, mtl_prompt_embd)
+                """
+            #
+            #     spa_prompt_emb = {}
+            #     for task in self.tasks:
+            #         spa_prompt_emb[task] = spa_prompt[task] @ prompt_emb
+            #         x_task[task] = x + spa_prompt_emb[task].expand(B, -1, -1)
+            #         out[task] = self.blocks[-1](x_task[task])
+            #
+            #         if self.downsample is not None:  # TODO : Shallow , refer VPT
 
 
 

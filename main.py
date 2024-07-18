@@ -277,6 +277,12 @@ def main(config):
         from models.MTLprompt import mtlprompt_detail
         mtlprompt_detail(model, detail=False, save=False)
 
+    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).cuda()
+    # model = model.cuda()
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
+                                                      output_device=args.local_rank,
+                                                      find_unused_parameters=True)
+
     logger.info("Start training")
     start_time = time.perf_counter()
 

@@ -185,7 +185,11 @@ def build_mtl(config, db_name="NYUD", val_only=False):
     dataset_train = get_mtl_train_dataset(
         db_name, config, train_transforms)
     dataset_val = get_mtl_val_dataset(db_name, config, val_transforms)
-    data_loader_train = get_mtl_train_dataloader(config, dataset_train)
+
+    # revised for DDP
+    train_sampler = torch.utils.data.distributed.DistributedSampler(dataset_train, drop_last=True)
+
+    data_loader_train = get_mtl_train_dataloader(config, dataset_train, train_sampler)
     data_loader_val = get_mtl_val_dataloader(config, dataset_val)
     mixup_fn = None
 
