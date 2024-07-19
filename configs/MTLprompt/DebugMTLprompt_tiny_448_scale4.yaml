@@ -26,14 +26,13 @@ MODEL:
       PROMPT_DROPOUT: 0
       SHARED:
         TYPE: SHALLOW # " DEEP | SHALLOW "
-        LEN: 10   #
+        LEN: 15   #
         METHOD: "prepend"
       SPATIAL:
         ENABLED: True # "Use task-specific prompt in encoder stage's last block (Similar to baseline)"
-        METHOD: "prepend" # prepend | low-rank
-        TAILOR: "MLP" # TODO "INIT | MLP | FACT"
-        TYPE: SHALLOW # " DEEP | SHALLOW "
-        LEN: 10  #  TODO :
+        METHOD: "low-rank" # prepend | low-rank
+        TYPE: DEEP # " DEEP | SHALLOW "
+        LEN: 15  #  TODO :
 
     DOWNSAMPLER_ENABLED: False
     FINAL_EMBED_DIM : 96

@@ -21,32 +21,21 @@ MODEL:
 
   MTLPROMPT:
     ENABLED: True
-    DECODER_TYPE: "baseline" # "share | sep_last | sep | firstblocksep | baseline"
+    DECODER_TYPE: "baseline" # " baseline "
     PROMPT:
       PROMPT_DROPOUT: 0
       SHARED:
         TYPE: SHALLOW # " DEEP | SHALLOW "
         LEN: 10   #
+        METHOD: "prepend"
       SPATIAL:
-        ENCODER: True # "Use task-specific prompt in encoder stage's last block (Similar to baseline)"
-        ENABLED: False
+        ENABLED: True # "Use task-specific prompt in encoder stage's last block (Similar to baseline)"
         METHOD: "prepend" # prepend | low-rank
-        TAILOR: "MLP" # TODO "INIT | MLP | FACT"
         TYPE: SHALLOW # " DEEP | SHALLOW "
         LEN: 10  #  TODO :
-      CHANNEL:
-        ENABLED: False
-        TAILOR: "MLP" # TODO "INIT | MLP | FACT"
-        TYPE: SHALLOW # " DEEP | SHALLOW "
-        LEN: 2
-        CHAN_N_HEADS: 16
-        CHAN_EMBED_DIM : 256
-#    MODULATION:  # MODULATION FOR TASK-SPECIFIC FEATURES
-#      ENABLE : TRUE
-#      TYPE : "element-wise" # "element-wise | FiLM"
 
+    DOWNSAMPLER_ENABLED: False
     FINAL_EMBED_DIM : 96
-
     FREEZE_PRETRAINED: True
 
   DECODER_HEAD:

@@ -54,15 +54,16 @@ class PromptedWindowAttention(WindowAttention):
             # mask: (nW, 49, 49) --> (nW, 49 + n_prompts, 49 + n_prompts)
             nW = mask.shape[0]
 
-            # expand relative_position_bias
-            mask = torch.cat((
-                torch.zeros(nW, self.num_prompts, _W, device=attn.device),
-                mask), dim=1)
-            mask = torch.cat((
-                torch.zeros(
-                    nW, _H + self.num_prompts, self.num_prompts,
-                    device=attn.device),
-                mask), dim=-1)
+            if prompt_location == "prepend":
+                # expand relative_position_bias
+                mask = torch.cat((
+                    torch.zeros(nW, self.num_prompts, _W, device=attn.device),
+                    mask), dim=1)
+                mask = torch.cat((
+                    torch.zeros(
+                        nW, _H + self.num_prompts, self.num_prompts,
+                        device=attn.device),
+                    mask), dim=-1)
             # logger.info("before", attn.shape)
             attn = attn.view(B_ // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
             # logger.info("after", attn.shape)
@@ -193,8 +194,8 @@ class PromptedSwinTransformerBlock(SwinTransformerBlock):
         x = shortcut + self.drop_path(x)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
 
-        return x[:, self.num_prompts:, :], x[:, :self.num_prompts, :]
-
+        #return x[:, self.num_prompts:, :], x[:, :self.num_prompts, :]
+        return x
 
 class PromptedPatchMerging(PatchMerging):
     r""" Patch Merging Layer.
@@ -250,14 +251,10 @@ class PromptedPatchMerging(PatchMerging):
 
         if prompt_location == "prepend" :
             x = torch.cat((prompt_emb, x), dim=1)
-            x = self.norm(x)
-            x = self.reduction(x)
-            return x[:, self.num_prompts:, :], x[:, :self.num_prompts, :]
 
-        else :
-            x = self.norm(x)
-            x = self.reduction(x)
-            return x
+        x = self.norm(x)
+        x = self.reduction(x)
+        return x
 
 
 
@@ -332,26 +329,21 @@ class PromptedSwinUTransformer(MTLSwinUNet):
                     trunc_normal_(self.spa_prompt[task], mean=1., std=1.)
 
             elif cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "low-rank":  # TODO : Make Deep Prompting
-                self.spa_prompt_embeddings_0 = {}
-                self.spa_prompt_embeddings_1 = {}
-                self.spa_prompt_embeddings_2 = {}
-                self.spa_prompt_embeddings_3 = {}
 
-                for task in self.tasks:
-                    self.spa_prompt_embeddings_0[task] = nn.Parameter(
-                        torch.zeros(1, self.patches_resolution[0] * self.patches_resolution[1], self.shared_prompt_len)).to(device)
-                    trunc_normal_(self.spa_prompt_embeddings_0[task], mean=1., std=1.)
-                    self.spa_prompt_embeddings_1[task] = nn.Parameter(
-                        torch.zeros(1, self.patches_resolution[0]//2 * self.patches_resolution[1]//2, self.shared_prompt_len)).to(device)
-                    trunc_normal_(self.spa_prompt_embeddings_1[task], mean=1., std=1.)
-                    self.spa_prompt_embeddings_2[task] = nn.Parameter(
-                        torch.zeros(1, self.patches_resolution[0]//4 * self.patches_resolution[1]//4, self.shared_prompt_len)).to(device)
-                    trunc_normal_(self.spa_prompt_embeddings_2[task], mean=1., std=1.)
-                    self.spa_prompt_embeddings_3[task] = nn.Parameter(
-                        torch.zeros(1, self.patches_resolution[0]//8 * self.patches_resolution[1]//8, self.shared_prompt_len)).to(device)
-                    trunc_normal_(self.spa_prompt_embeddings_3[task], mean=1., std=1.)
+                self.spa_prompt_embeddings_0 = nn.ParameterDict({task: nn.Parameter(trunc_normal_(
+                    torch.zeros(1, self.patches_resolution[0] * self.patches_resolution[1], self.shared_prompt_len).to(
+                        device), mean=1., std=1.)) for task in self.tasks})
+                self.spa_prompt_embeddings_1 = nn.ParameterDict({task: nn.Parameter(trunc_normal_(
+                    torch.zeros(1, self.patches_resolution[0] // 2 * self.patches_resolution[1] // 2,
+                                self.shared_prompt_len).to(device), mean=1., std=1.)) for task in self.tasks})
+                self.spa_prompt_embeddings_2 = nn.ParameterDict({task: nn.Parameter(trunc_normal_(
+                    torch.zeros(1, self.patches_resolution[0] // 4 * self.patches_resolution[1] // 4,
+                                self.shared_prompt_len).to(device), mean=1., std=1.)) for task in self.tasks})
+                self.spa_prompt_embeddings_3 = nn.ParameterDict({task: nn.Parameter(trunc_normal_(
+                    torch.zeros(1, self.patches_resolution[0] // 8 * self.patches_resolution[1] // 8,
+                                self.shared_prompt_len).to(device), mean=1., std=1.)) for task in self.tasks})
 
-                self.spa_prompt = [self.spa_prompt_embeddings_0, self.spa_prompt_embeddings_1, self.spa_prompt_embeddings_2, self.spa_prompt_embeddings_3]
+                #self.spa_prompt = nn.ParameterList([self.spa_prompt_embeddings_0, self.spa_prompt_embeddings_1, self.spa_prompt_embeddings_2, self.spa_prompt_embeddings_3])
 
         # stochastic depth
         dpr_encoder = [x.item() for x in
@@ -414,7 +406,6 @@ class PromptedSwinUTransformer(MTLSwinUNet):
     def forward_features(self, x):  # x : B*Task, C=3, H, W
 
         x = self.get_patch_embeddings(x)
-        #print(f"x.shape after embedding : {x.shape}") # B, 3136(56*56) , 128
         x_downsample = []
         mtl_prompt_embd = None
 
@@ -429,11 +420,19 @@ class PromptedSwinUTransformer(MTLSwinUNet):
         elif self.cfg.MODEL.MTLPROMPT.PROMPT.SHARED.TYPE == 'SHALLOW':
             mtl_prompt_embd = self.prompt_embeddings
 
-            if self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENABLED:
+            if self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENABLED and self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.TYPE == "SHALLOW":
                 spa_prompt = self.spa_prompt
                 for i, layer in enumerate(self.layers):
                     mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
                     x, out, mtl_prompt_embd, spa_prompt = layer(x, mtl_prompt_embd, spa_prompt)
+                    x_downsample.append(out)
+
+            elif self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENABLED and self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "low-rank":
+                for layer, spa_prompt in zip(self.layers, [self.spa_prompt_embeddings_0, self.spa_prompt_embeddings_1,
+                                                            self.spa_prompt_embeddings_2, self.spa_prompt_embeddings_3]):
+
+                    mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
+                    x, out, mtl_prompt_embd = layer(x, mtl_prompt_embd, spa_prompt)
                     x_downsample.append(out)
 
             else:

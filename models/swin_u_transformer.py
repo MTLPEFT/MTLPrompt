@@ -14,6 +14,12 @@ import math
 from einops import rearrange
 
 
+
+def sep_prompt(x, num_prompts):
+    out, prompts = x[:, num_prompts:, :], x[:, :num_prompts, :]
+    return out, prompts
+
+
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
         super().__init__()
@@ -450,7 +456,6 @@ class BasicLayer(nn.Module):
                                      drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
                                      norm_layer=norm_layer)
                 for i in range(depth)])
-            #self.num_prompts = num_prompts
 
         else:
             self.blocks = nn.ModuleList([
@@ -493,52 +498,52 @@ class BasicLayer(nn.Module):
         elif mtl_prompt_embd is not None and spa_prompt is not None:
             B = len(x)
             num_blocks = len(self.blocks)
+            shared_len = self.cfg.MODEL.MTLPROMPT.PROMPT.SHARED.LEN
+            spa_len = self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.LEN
 
             for i in range(num_blocks - 1):
                 prompt_emb = mtl_prompt_embd.expand(B, -1, -1)
                 x = torch.cat((prompt_emb, x), dim=1)
-                x, prompt_emb = self.blocks[i](x,  prompt_location="prepend")
+                x, prompt_emb = sep_prompt(self.blocks[i](x,  prompt_location="prepend"), shared_len)
 
             out = {}
             x_task = {}
             x_ori = x
 
             if self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "prepend":
-                #x = torch.cat((prompt_emb, x_ori), dim=1)
                 if self.downsample is not None:
                     x = torch.cat((prompt_emb, x), dim=1)
-                    x, prompt_emb = self.downsample(x, prompt_location="prepend")
+                    x, prompt_emb = sep_prompt(self.downsample(x, prompt_location="prepend"), shared_len)
 
                 spa_prompt_emb = {}
                 for task in self.tasks:
                     spa_prompt_emb[task] = spa_prompt[task].expand(B, -1, -1)
                     x_task[task] = torch.cat((spa_prompt_emb[task], x_ori), dim=1)
-                    out[task], spa_prompt_emb[task] = self.blocks[-1](x_task[task], prompt_location="prepend")
+                    out[task], spa_prompt_emb[task] = sep_prompt(self.blocks[-1](x_task[task], prompt_location="prepend"), spa_len)
 
                     if self.downsample is not None:
                         out[task] = torch.cat((spa_prompt_emb[task], out[task]), dim=1)
-                        out[task], spa_prompt_emb[task] = self.downsample(out[task], prompt_location="prepend")
+                        out[task], spa_prompt_emb[task] = sep_prompt(self.downsample(out[task], prompt_location="prepend"), spa_len)
                         out[task] = out[task] + x
 
-            # TODO : List 활용
-            #elif self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "low-rank":
-                """
-                for layer, mtl_prompt_embd in zip(self.layers, [self.deep_prompt_embeddings_0, self.deep_prompt_embeddings_1,
-                                                self.deep_prompt_embeddings_2, self.deep_prompt_embeddings_3]):
-                x_downsample.append(x)
-                mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
-                x, _ = layer(x, mtl_prompt_embd)
-                """
-            #
-            #     spa_prompt_emb = {}
-            #     for task in self.tasks:
-            #         spa_prompt_emb[task] = spa_prompt[task] @ prompt_emb
-            #         x_task[task] = x + spa_prompt_emb[task].expand(B, -1, -1)
-            #         out[task] = self.blocks[-1](x_task[task])
-            #
-            #         if self.downsample is not None:  # TODO : Shallow , refer VPT
+                return x, out, prompt_emb, spa_prompt_emb
 
-            return x, out, prompt_emb, spa_prompt_emb
+            elif self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "low-rank":
+                ori_prompt_emb = prompt_emb
+                if self.downsample is not None:
+                    x = torch.cat((prompt_emb, x), dim=1)
+                    x, prompt_emb = sep_prompt(self.downsample(x, prompt_location="prepend"), shared_len)
+
+                spa_prompt_emb = {}
+                for task in self.tasks:
+                    spa_prompt_emb[task] = spa_prompt[task] @ ori_prompt_emb
+                    x_task[task] = x_ori + spa_prompt_emb[task].expand(B, -1, -1)
+                    out[task] = self.blocks[-1](x_task[task])
+
+                    if self.downsample is not None:
+                        out[task] = self.downsample(out[task])
+
+                return x, out, prompt_emb
 
         # Only Shared-Prompt used
         else:
@@ -669,7 +674,6 @@ class MTLSwinUNet(nn.Module):
 
         self.norm_up = norm_layer(self.embed_dim)
 
-
         # split image into non-overlapping patches
         self.patch_embed = PatchEmbed(
             img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim,
@@ -678,7 +682,6 @@ class MTLSwinUNet(nn.Module):
         self.num_patches = num_patches
         patches_resolution = self.patch_embed.patches_resolution
         self.patches_resolution = patches_resolution
-        #self.patch_grid = self.patch_embed.patches_resolution
 
         # absolute position embedding
         if self.ape:
@@ -689,9 +692,6 @@ class MTLSwinUNet(nn.Module):
 
         # stochastic depth
         dpr_encoder = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
-        #dpr_decoder = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths_decoder))]  # stochastic depth decay rule
-
-        #self.task_id_2_task_idx = {i: i for i, t in enumerate(tasks)}  # {0:0, 1:1}
 
         """ Encoder Module """
 
@@ -831,42 +831,6 @@ class MTLSwinUNet(nn.Module):
         # Forward through the encoder layers
         x, x_downsample = self.forward_features(x)  # x : B*Task, C, H, W
 
-        # if self.cfg.MODEL.MTLPROMPT.DECODER_TYPE == "share":
-        #
-        #     layers_up = self.decoder_layers_layers_up  # PatchExpand, BasicLayerup
-        #     concat_back_dim = self.decoder_layers_concat_back_dim
-        #     norm_up = self.decoder_layers_norm_up
-        #     up = self.decoder_layers_up  # Final layer up
-        #
-        #     x = self.forward_up_features(x, x_downsample, layers_up, concat_back_dim, norm_up)
-        #     outputs = self.up_x4(x, up)  # ([4, 96, 224, 224])
-        #
-        # elif self.cfg.MODEL.MTLPROMPT.DECODER_TYPE == "sep_last":
-        #     outputs = {}
-        #     layers_up = self.decoder_layers_layers_up  # PatchExpand, BasicLayerup
-        #     concat_back_dim = self.decoder_layers_concat_back_dim
-        #     norm_up = self.decoder_layers_norm_up
-        #     up = self.decoder_layers_up  # Final layer up
-        #
-        #     x = self.forward_up_features(x, x_downsample, layers_up, concat_back_dim, norm_up)
-        #     for task in self.tasks:
-        #         decoder_output = x[task]
-        #         outputs[task] = self.up_x4(decoder_output, up)  # ([4, 96, 224, 224])
-        #
-        # else:
-        #     outputs = {}
-        #     for task in self.tasks:
-        #         layers_up = self.decoder_layers_layers_up[task]
-        #         concat_back_dim = self.decoder_layers_concat_back_dim[task]
-        #         norm_up = self.decoder_layers_norm_up[task]
-        #         up = self.decoder_layers_up[task]
-        #         #dec_output = self.decoder_layers_output[task]
-        #
-        #         x_up = self.forward_up_features(x, x_downsample, layers_up, concat_back_dim, norm_up)
-        #
-        #         outputs[task] = self.up_x4(x_up, up)
-
-        #return outputs
         return x
 
     def flops(self):
