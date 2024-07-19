@@ -17,7 +17,7 @@ import cv2
 import imageio
 import scipy.io as sio
 import torch.nn.functional as F
-from models.lora import map_old_state_dict_weights
+#from models.lora import map_old_state_dict_weights
 
 
 def mkdir_if_missing(directory):
@@ -39,8 +39,10 @@ def load_checkpoint(config, model, optimizer, lr_scheduler, loss_scaler, logger,
     else:
         checkpoint = torch.load(resume_path, map_location='cpu')
 
-    mtlora = config.MODEL.MTLORA
-    mtlora_enabled = mtlora.ENABLED
+    # mtlora = config.MODEL.MTLORA
+    # mtlora_enabled = mtlora.ENABLED
+    mtlprompt = config.MODEL.MTLPROMPT
+    mtlprompt_enabled = mtlprompt.ENABLED
 
     skip_decoder = config.TRAIN.SKIP_DECODER_CKPT
 
@@ -113,31 +115,26 @@ def load_checkpoint(config, model, optimizer, lr_scheduler, loss_scaler, logger,
                         1, 2)
                     model_state[k] = absolute_pos_embed_pretrained_resized
 
-    if mtlora_enabled:
+    # TODO : mtlprompt checkpoint load
+    if mtlprompt_enabled:
         mapping = {}
         trainable_layers = []
-        if mtlora.QKV_ENABLED:
-            trainable_layers.extend(["attn.qkv.weight", "attn.qkv.bias"])
-        if mtlora.PROJ_ENABLED:
-            trainable_layers.extend(["attn.proj.weight", "attn.proj.bias"])
-        if mtlora.FC1_ENABLED:
-            trainable_layers.extend(["mlp.fc1.weight", "mlp.fc1.bias"])
-        if mtlora.FC2_ENABLED:
-            trainable_layers.extend(["mlp.fc2.weight", "mlp.fc2.bias"])
-        if mtlora.DOWNSAMPLER_ENABLED:
-            trainable_layers.extend(["downsample.reduction.weight"])
+        # if mtlprompt.QKV_ENABLED:
+        #     trainable_layers.extend(["attn.qkv.weight", "attn.qkv.bias"])
+        #
+        # for k, v in model_state.items():
+        #     last_three = ".".join(k.split(".")[-3:])
+        #     prefix = ".".join(k.split(".")[:-3])
+        #     if last_three in trainable_layers:
+        #         weight_bias = last_three.split(".")[-1]
+        #         layer_name = ".".join(last_three.split(".")[:-1])
+        #         mapping[f"{prefix}.{layer_name}.{weight_bias}"] = f"{prefix}.{layer_name}.linear.{weight_bias}"
+        # if not len(mapping):
+        #     print("No keys needs to be mapped for LoRA")
+        # model_state = map_old_state_dict_weights(
+        #     model_state, mapping, "", config.MODEL.MTLORA.SPLIT_QKV)
 
-        for k, v in model_state.items():
-            last_three = ".".join(k.split(".")[-3:])
-            prefix = ".".join(k.split(".")[:-3])
-            if last_three in trainable_layers:
-                weight_bias = last_three.split(".")[-1]
-                layer_name = ".".join(last_three.split(".")[:-1])
-                mapping[f"{prefix}.{layer_name}.{weight_bias}"] = f"{prefix}.{layer_name}.linear.{weight_bias}"
-        if not len(mapping):
-            print("No keys needs to be mapped for LoRA")
-        model_state = map_old_state_dict_weights(
-            model_state, mapping, "", config.MODEL.MTLORA.SPLIT_QKV)
+
     missing, unexpected = model.load_state_dict(model_state, strict=False)
     if not quiet:
         if len(missing) > 0:

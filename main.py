@@ -32,7 +32,7 @@ from utils import load_checkpoint, load_pretrained, save_checkpoint, NativeScale
 from mtl_loss_schemes import MultiTaskLoss, get_loss
 from evaluation.evaluate_utils import PerformanceMeter, get_output
 from ptflops import get_model_complexity_info
-from models.lora import mark_only_lora_as_trainable
+
 
 try:
     import wandb
@@ -245,20 +245,7 @@ def main(config):
     if config.THROUGHPUT_MODE:
         throughput(data_loader_val, model, logger)
         return
-    if config.MODEL.MTLORA.ENABLED:
-        if config.MODEL.MTLORA.FREEZE_PRETRAINED:
-            print("\nMarking LoRA params only as trainable:")
-            mark_only_lora_as_trainable(model.backbone,
-                                        bias=config.MODEL.MTLORA.BIAS,
-                                        freeze_patch_embed=config.TRAIN.FREEZE_PATCH_EMBED,
-                                        freeze_norm=config.TRAIN.FREEZE_LAYER_NORM,
-                                        free_relative_bias=config.TRAIN.FREEZE_RELATIVE_POSITION_BIAS,
-                                        freeze_downsample_reduction=True if config.MODEL.MTLORA.DOWNSAMPLER_ENABLED else config.TRAIN.FREEZE_DOWNSAMPLE_REDUCTION)
-        else:
-            print("Marking all layers as trainable")
 
-        from models.lora import lora_detail
-        lora_detail(model, save=False)
 
     elif config.MODEL.MTLPROMPT.ENABLED:
         if config.MODEL.MTLPROMPT.FREEZE_PRETRAINED:
@@ -269,7 +256,7 @@ def main(config):
                                        freeze_patch_embed = config.TRAIN.FREEZE_PATCH_EMBED,
                                        freeze_norm = config.TRAIN.FREEZE_LAYER_NORM,
                                        free_relative_bias = config.TRAIN.FREEZE_RELATIVE_POSITION_BIAS,
-                                       freeze_downsample_reduction=True if config.MODEL.MTLORA.DOWNSAMPLER_ENABLED else config.TRAIN.FREEZE_DOWNSAMPLE_REDUCTION
+                                       freeze_downsample_reduction=True if config.MODEL.MTLPROMPT.DOWNSAMPLER_ENABLED else config.TRAIN.FREEZE_DOWNSAMPLE_REDUCTION
                                        )
         else:
             print("Marking all layers as trainable")
@@ -277,6 +264,7 @@ def main(config):
         from models.MTLprompt import mtlprompt_detail
         mtlprompt_detail(model, detail=False, save=False)
 
+    # Added for DDP
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model).cuda()
     # model = model.cuda()
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],

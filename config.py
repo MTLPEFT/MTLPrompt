@@ -304,28 +304,28 @@ _C.MODEL.MTLPROMPT.DECODER_TYPE = 'sep_last'
 _C.MODEL.MTLPROMPT.PROMPT = CN(new_allowed=True)
 _C.MODEL.MTLPROMPT.FINAL_EMBED_DIM = 96
 _C.MODEL.MTLPROMPT.FREEZE_PRETRAINED = True
+_C.MODEL.MTLPROMPT.DOWNSAMPLER_ENABLED = False
 
-
-_C.MODEL.MTLORA = CN()
-_C.MODEL.MTLORA.ENABLED = False
-_C.MODEL.MTLORA.BIAS = 'none'  # none, all, lora_only
-_C.MODEL.MTLORA.R = [8, 8, 8, 8]
-_C.MODEL.MTLORA.SHARED_SCALE = [2.0, 2.0, 2.0, 2.0]
-_C.MODEL.MTLORA.TASK_SCALE = [2.0, 2.0, 2.0, 2.0]
-_C.MODEL.MTLORA.DROPOUT = [0.05, 0.05, 0.05, 0.05]
-_C.MODEL.MTLORA.TRAINABLE_SCALE_SHARED = False
-_C.MODEL.MTLORA.TRAINABLE_SCALE_PER_TASK = False
-_C.MODEL.MTLORA.INTERMEDIATE_SPECIALIZATION = False
-_C.MODEL.MTLORA.FREEZE_PRETRAINED = True
-_C.MODEL.MTLORA.SPLIT_QKV = False
-_C.MODEL.MTLORA.R_PER_TASK = CN(new_allowed=True)
-_C.MODEL.MTLORA.SCALE_PER_TASK = CN(new_allowed=True)
-_C.MODEL.MTLORA.SHARED_MODE = 'matrix'  # 'matrix', 'addition', lora_only
-_C.MODEL.MTLORA.QKV_ENABLED = True
-_C.MODEL.MTLORA.PROJ_ENABLED = True
-_C.MODEL.MTLORA.FC1_ENABLED = True
-_C.MODEL.MTLORA.FC2_ENABLED = True
-_C.MODEL.MTLORA.DOWNSAMPLER_ENABLED = False
+# _C.MODEL.MTLORA = CN()
+# _C.MODEL.MTLORA.ENABLED = False
+# _C.MODEL.MTLORA.BIAS = 'none'  # none, all, lora_only
+# _C.MODEL.MTLORA.R = [8, 8, 8, 8]
+# _C.MODEL.MTLORA.SHARED_SCALE = [2.0, 2.0, 2.0, 2.0]
+# _C.MODEL.MTLORA.TASK_SCALE = [2.0, 2.0, 2.0, 2.0]
+# _C.MODEL.MTLORA.DROPOUT = [0.05, 0.05, 0.05, 0.05]
+# _C.MODEL.MTLORA.TRAINABLE_SCALE_SHARED = False
+# _C.MODEL.MTLORA.TRAINABLE_SCALE_PER_TASK = False
+# _C.MODEL.MTLORA.INTERMEDIATE_SPECIALIZATION = False
+# _C.MODEL.MTLORA.FREEZE_PRETRAINED = True
+# _C.MODEL.MTLORA.SPLIT_QKV = False
+# _C.MODEL.MTLORA.R_PER_TASK = CN(new_allowed=True)
+# _C.MODEL.MTLORA.SCALE_PER_TASK = CN(new_allowed=True)
+# _C.MODEL.MTLORA.SHARED_MODE = 'matrix'  # 'matrix', 'addition', lora_only
+# _C.MODEL.MTLORA.QKV_ENABLED = True
+# _C.MODEL.MTLORA.PROJ_ENABLED = True
+# _C.MODEL.MTLORA.FC1_ENABLED = True
+# _C.MODEL.MTLORA.FC2_ENABLED = True
+# _C.MODEL.MTLORA.DOWNSAMPLER_ENABLED = False
 
 
 def _update_config_from_file(config, cfg_file):
@@ -475,88 +475,6 @@ def update_config(config, args):
     # output folder
     config.OUTPUT = os.path.join(config.OUTPUT, config.MODEL.NAME, config.TAG)
 
-    # Normalize MTLoRA config
-    if config.MODEL.MTLORA.ENABLED:
-        if not isinstance(config.MODEL.MTLORA.R, list):
-            config.MODEL.MTLORA.R = [
-                config.MODEL.MTLORA.R] * len(config.MODEL.SWIN.DEPTHS)
-        elif len(config.MODEL.MTLORA.R) == 1:
-            config.MODEL.MTLORA.R = config.MODEL.MTLORA.R * \
-                len(config.MODEL.SWIN.DEPTHS)
-        else:
-            assert len(config.MODEL.MTLORA.R) == len(
-                config.MODEL.SWIN.DEPTHS), "MTLoRA ranks length should be the same as the number of layers"
-        if not isinstance(config.MODEL.MTLORA.SHARED_SCALE, list):
-            config.MODEL.MTLORA.SHARED_SCALE = [
-                config.MODEL.MTLORA.SHARED_SCALE] * len(config.MODEL.SWIN.DEPTHS)
-        elif len(config.MODEL.MTLORA.SHARED_SCALE) == 1:
-            config.MODEL.MTLORA.SHARED_SCALE = config.MODEL.MTLORA.SHARED_SCALE * \
-                len(config.MODEL.SWIN.DEPTHS)
-        else:
-            assert len(config.MODEL.MTLORA.SHARED_SCALE) == len(
-                config.MODEL.SWIN.DEPTHS), "MTLoRA shared scale length should be the same as the number of layers"
-        if not isinstance(config.MODEL.MTLORA.TASK_SCALE, list):
-            config.MODEL.MTLORA.TASK_SCALE = [
-                config.MODEL.MTLORA.TASK_SCALE] * len(config.MODEL.SWIN.DEPTHS)
-        elif len(config.MODEL.MTLORA.TASK_SCALE) == 1:
-            config.MODEL.MTLORA.TASK_SCALE = config.MODEL.MTLORA.TASK_SCALE * \
-                len(config.MODEL.SWIN.DEPTHS)
-        else:
-            assert len(config.MODEL.MTLORA.TASK_SCALE) == len(
-                config.MODEL.SWIN.DEPTHS), "MTLoRA task scale length should be the same as the number of layers"
-        if not isinstance(config.MODEL.MTLORA.DROPOUT, list):
-            config.MODEL.MTLORA.DROPOUT = [
-                config.MODEL.MTLORA.DROPOUT] * len(config.MODEL.SWIN.DEPTHS)
-        elif len(config.MODEL.MTLORA.DROPOUT) == 1:
-            config.MODEL.MTLORA.DROPOUT = config.MODEL.MTLORA.DROPOUT * \
-                len(config.MODEL.SWIN.DEPTHS)
-        else:
-            assert len(config.MODEL.MTLORA.DROPOUT) == len(
-                config.MODEL.SWIN.DEPTHS), "MTLoRA dropout length should be the same as the number of layers"
-
-        if len(config.MODEL.MTLORA.R_PER_TASK) == 0:
-            for task in config.TASKS:
-                config.MODEL.MTLORA.R_PER_TASK[task] = config.MODEL.MTLORA.R[:]
-            config.MODEL.MTLORA.R_PER_TASK['shared'] = config.MODEL.MTLORA.R[:]
-        else:
-            for task in config.TASKS + ['shared']:
-                if not isinstance(config.MODEL.MTLORA.R_PER_TASK[task], list):
-                    config.MODEL.MTLORA.R_PER_TASK[task] = [
-                        config.MODEL.MTLORA.R_PER_TASK[task]] * len(config.MODEL.SWIN.DEPTHS)
-                elif len(config.MODEL.MTLORA.R_PER_TASK[task]) == 1:
-                    config.MODEL.MTLORA.R_PER_TASK[task] = config.MODEL.MTLORA.R_PER_TASK[task] * \
-                        len(config.MODEL.SWIN.DEPTHS)
-                else:
-                    assert len(config.MODEL.MTLORA.R_PER_TASK[task]) == len(
-                        config.MODEL.SWIN.DEPTHS), "MTLoRA ranks length should be the same as the number of layers"
-
-        if len(config.MODEL.MTLORA.SCALE_PER_TASK) == 0:
-            for task in config.TASKS:
-                config.MODEL.MTLORA.SCALE_PER_TASK[task] = config.MODEL.MTLORA.SHARED_SCALE[:]
-        else:
-            for task in config.TASKS:
-                if not isinstance(config.MODEL.MTLORA.SCALE_PER_TASK[task], list):
-                    config.MODEL.MTLORA.SCALE_PER_TASK[task] = [
-                        config.MODEL.MTLORA.SCALE_PER_TASK[task]] * len(config.MODEL.SWIN.DEPTHS)
-                elif len(config.MODEL.MTLORA.SCALE_PER_TASK[task]) == 1:
-                    config.MODEL.MTLORA.SCALE_PER_TASK[task] = config.MODEL.MTLORA.SCALE_PER_TASK[task] * \
-                        len(config.MODEL.SWIN.DEPTHS)
-                else:
-                    assert len(config.MODEL.MTLORA.SCALE_PER_TASK[task]) == len(
-                        config.MODEL.SWIN.DEPTHS), "MTLoRA task scale length should be the same as the number of layers"
-        config.MODEL.MTLORA.R_PER_TASK_LIST = []
-        config.MODEL.MTLORA.SCALE_PER_TASK_LIST = []
-        for i in range(len(config.MODEL.SWIN.DEPTHS)):
-            layer_task_r = {
-                'shared': config.MODEL.MTLORA.R[i] if 'shared' not in config.MODEL.MTLORA.R_PER_TASK else config.MODEL.MTLORA.R_PER_TASK['shared'][i]
-            }
-            layer_task_scale = {
-            }
-            for task in config.TASKS:
-                layer_task_r[task] = config.MODEL.MTLORA.R_PER_TASK[task][i]
-                layer_task_scale[task] = config.MODEL.MTLORA.SCALE_PER_TASK[task][i]
-            config.MODEL.MTLORA.R_PER_TASK_LIST.append(layer_task_r)
-            config.MODEL.MTLORA.SCALE_PER_TASK_LIST.append(layer_task_scale)
     config.freeze()
 
 

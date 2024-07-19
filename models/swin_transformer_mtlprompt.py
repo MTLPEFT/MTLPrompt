@@ -4,7 +4,7 @@
 # Code from https://github.com/CAMTL/CA-MTL
 # Code from VTAGML
 """
-from models.swin_transformer import SwinTransformer
+
 from models.swin_u_transformer import *
 
 import numpy as np
@@ -35,7 +35,7 @@ class PromptedWindowAttention(WindowAttention):
             self.window_size[0] * self.window_size[1], self.window_size[0] * self.window_size[1], -1)  # Wh*Ww,Wh*Ww,nH
         relative_position_bias = relative_position_bias.permute(2, 0, 1).contiguous()  # nH, Wh*Ww, Wh*Ww
 
-        if self.prompt_location == "prepend":
+        if prompt_location == "prepend":
             # expand relative_position_bias
             _C, _H, _W = relative_position_bias.shape
 
@@ -106,7 +106,7 @@ class PromptedSwinTransformerBlock(SwinTransformerBlock):
         shortcut = x
         x = self.norm1(x)
 
-        if self.prompt_location == "prepend":
+        if prompt_location == "prepend":
             # change input size
             prompt_emb = x[:, :self.num_prompts, :]
             x = x[:, self.num_prompts:, :]
@@ -143,7 +143,7 @@ class PromptedSwinTransformerBlock(SwinTransformerBlock):
         # nW*B, num_prompts + window_size*window_size, C
         num_windows = int(x_windows.shape[0] / B)
 
-        if self.prompt_location == "prepend":
+        if prompt_location == "prepend":
             # expand prompts_embs
             # B, num_prompts, C --> nW*B, num_prompts, C
             prompt_emb = prompt_emb.unsqueeze(0)
@@ -151,10 +151,10 @@ class PromptedSwinTransformerBlock(SwinTransformerBlock):
             prompt_emb = prompt_emb.reshape((-1, self.num_prompts, C))
             x_windows = torch.cat((prompt_emb, x_windows), dim=1)
 
-        attn_windows = self.attn(x_windows, mask=self.attn_mask)
+        attn_windows = self.attn(x_windows, mask=self.attn_mask, prompt_location = prompt_location)
 
         # seperate prompt embs --> nW*B, num_prompts, C
-        if self.prompt_location == "prepend":
+        if prompt_location == "prepend":
             # change input size
             prompt_emb = attn_windows[:, :self.num_prompts, :]
             attn_windows = attn_windows[:, self.num_prompts:, :]
@@ -186,7 +186,7 @@ class PromptedSwinTransformerBlock(SwinTransformerBlock):
         x = x.view(B, OH * OW, C)
 
         # add the prompt back:
-        if self.prompt_location == "prepend":
+        if prompt_location == "prepend":
             x = torch.cat((prompt_emb, x), dim=1)
 
         # FFN
@@ -220,7 +220,7 @@ class PromptedPatchMerging(PatchMerging):
             (prompt_emb, prompt_emb, prompt_emb, prompt_emb), dim=-1)
         return prompt_emb
 
-    def forward(self, x, location=None):
+    def forward(self, x, prompt_location=None):
         """
         x: B, H*W, C
         """
@@ -228,7 +228,7 @@ class PromptedPatchMerging(PatchMerging):
         B, L, C = x.shape
 
         # change input size
-        if location == "prepend" :
+        if prompt_location == "prepend" :
             prompt_emb = x[:, :self.num_prompts, :]
             x = x[:, self.num_prompts:, :]
             L = L - self.num_prompts
@@ -248,7 +248,7 @@ class PromptedPatchMerging(PatchMerging):
         x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
         x = x.view(B, -1, 4 * C)  # B H/2*W/2 4*C
 
-        if location == "prepend" :
+        if prompt_location == "prepend" :
             x = torch.cat((prompt_emb, x), dim=1)
             x = self.norm(x)
             x = self.reduction(x)
@@ -258,474 +258,6 @@ class PromptedPatchMerging(PatchMerging):
             x = self.norm(x)
             x = self.reduction(x)
             return x
-
-
-class PromptedPatchExpand(PatchExpand):
-    def __init__(self, num_prompts, input_resolution, dim, dim_scale=2, norm_layer=nn.LayerNorm):
-        super(PromptedPatchExpand, self).__init__(input_resolution, dim, dim_scale, norm_layer)
-
-        self.num_prompts = num_prompts
-
-        self.input_resolution = input_resolution
-        self.dim = dim
-        self.expand = nn.Linear(dim, 2 * dim, bias=False) if dim_scale == 2 else nn.Identity()
-        self.norm = norm_layer(dim // dim_scale)
-
-
-        self.prompt_downsampling = nn.Linear(dim, dim//2, bias=False) if dim_scale == 2 else nn.Identity()
-        self.norm_prompt = norm_layer(dim//2)
-
-    def forward(self, x):
-        """
-        x: B, H*W, C
-        """
-        H, W = self.input_resolution
-        B, L, C = x.shape
-
-        #prompt_emb = x[:, :self.num_prompts, :]
-        #x = x[:, self.num_prompts:, :]
-        #L = L - self.num_prompts
-
-        x = self.expand(x)
-        B, L, C = x.shape
-        assert L == H * W, "input feature has wrong size"
-
-        x = x.view(B, H, W, C)
-        x = rearrange(x, 'b h w (p1 p2 c)-> b (h p1) (w p2) c', p1=2, p2=2, c=C // 4)
-        x = x.view(B, -1, C // 4)
-        x = self.norm(x)
-
-        return x
-
-
-class Decoder_PromptedSwinUTransformer(Decoder_MTLdSwinUTransformer):
-    def __init__(self, cfg, img_size=224, patch_size=4, in_chans=3,
-                 embed_dim=96, depths=[2, 2, 18, 2], depths_decoder=[2, 2, 2, 2], num_heads=[3, 6, 12, 24],
-                 window_size=7, mlp_ratio=4., qkv_bias=True, qk_scale=None,
-                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
-                 norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
-                 use_checkpoint=False, final_upsample="expand_first", task_classes = [14, 1], tasks=None,
-                 decoder_type = None,
-                 device='cuda',**kwargs):
-
-        # super().__init__()
-
-        super(Decoder_PromptedSwinUTransformer, self).__init__(
-            cfg, img_size, patch_size, in_chans,
-            embed_dim, depths, depths_decoder, num_heads,
-            window_size, mlp_ratio, qkv_bias, qk_scale,
-            drop_rate, attn_drop_rate, drop_path_rate,
-            norm_layer, ape, patch_norm,
-            use_checkpoint, final_upsample, task_classes, tasks,
-            decoder_type,
-            device, **kwargs
-        )
-
-        self.cfg = cfg
-
-        self.prompt_dropout = nn.Dropout(cfg.MODEL.MTLPROMPT.PROMPT.PROMPT_DROPOUT)
-
-        dpr_decoder = [x.item() for x in
-                       torch.linspace(0, drop_path_rate, sum(depths_decoder))]  # stochastic depth decay rule
-
-        """ Decoder Module """
-
-        # self.layers_up = nn.ModuleList()    # up-sampling Layer 모아두는 모듈
-        # self.concat_back_dim = nn.ModuleList()   #
-
-        if cfg.MODEL.MTLPROMPT.DECODER_TYPE == "share":
-            self.decoder_layers_layers_up = nn.ModuleList()  # decoder layer 에서 upsample Transformer
-            self.decoder_layers_concat_back_dim = nn.ModuleList()  #
-            self.decoder_layers_norm_up = nn.ModuleList()  # decoder layer 에서 upsampling 하고 normalize
-            self.decoder_layers_up = nn.ModuleList()  # Final up sample 만 포함?
-            self.decoder_layers_norm_up.append(norm_layer(self.embed_dim))
-            # self.decoder_layers_output = nn.ModuleDict()  # Task specific heads
-
-            # Shared decoder, specific task heads <- VTAGML 이랑 다른 부분
-            for i_layer in range(self.num_layers):
-                concat_linear = nn.Linear(2 * int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-                                          int(embed_dim * 2 ** (
-                                                      self.num_layers - 1 - i_layer))) if i_layer > 0 else nn.Identity()
-
-                if i_layer == 0:
-                    layer_up = PatchExpand(
-                        input_resolution=(self.patches_resolution[0] // (2 ** (self.num_layers - 1 - i_layer)),
-                                          self.patches_resolution[1] // (2 ** (self.num_layers - 1 - i_layer))),
-                        dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)), dim_scale=2, norm_layer=norm_layer)
-                else:
-                    layer_up = BasicLayer_up(dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-                                             input_resolution=(
-                                                 self.patches_resolution[0] // (2 ** (self.num_layers - 1 - i_layer)),
-                                                 self.patches_resolution[1] // (2 ** (self.num_layers - 1 - i_layer))),
-                                             depth=depths_decoder[(self.num_layers - 1 - i_layer)],
-                                             num_heads=num_heads[(self.num_layers - 1 - i_layer)],
-                                             window_size=window_size,
-                                             mlp_ratio=self.mlp_ratio,
-                                             qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                             drop=drop_rate, attn_drop=attn_drop_rate,
-                                             drop_path=dpr_decoder[sum(depths[:(self.num_layers - 1 - i_layer)]):sum(
-                                                 depths[:(self.num_layers - 1 - i_layer) + 1])],
-                                             norm_layer=norm_layer,
-                                             upsample=PromptedPatchExpand if (i_layer < self.num_layers - 1) else None,
-                                             block_module=PromptedSwinTransformerBlock,
-                                             use_checkpoint=use_checkpoint,
-                                             num_prompts=self.all_prompt_len,
-                                             cfg=cfg
-                                             )
-                # 이 부분 수정
-                # self.layers_up.append(layer_up)
-                # self.concat_back_dim.append(concat_linear)
-                self.decoder_layers_layers_up.append(layer_up)
-                self.decoder_layers_concat_back_dim.append(concat_linear)
-
-
-            if self.final_upsample == "expand_first":
-                up = FinalPatchExpand_X4(input_resolution=(
-                    img_size // patch_size, img_size // patch_size), dim_scale=4, dim=embed_dim)
-
-                self.decoder_layers_up.append(up)
-
-        elif cfg.MODEL.MTLPROMPT.DECODER_TYPE == "firstblocksep":
-            self.decoder_layers_layers_up = nn.ModuleDict()  # decoder layer 에서 upsample Transformer
-            #self.decoder_layers_concat_back_dim = nn.ModuleList()  #
-            self.decoder_layers_norm_up = nn.ModuleList()  # decoder layer 에서 upsampling 하고 normalize
-            self.decoder_layers_up = nn.ModuleDict()  # Final up sample 만 포함?
-
-            for task in tasks:
-                up = FinalPatchExpand_X4(input_resolution=(
-                    img_size[0] // patch_size, img_size[1] // patch_size), dim_scale=4, dim=embed_dim)
-
-                self.decoder_layers_up[task] = up
-
-            i_layer = 2
-            if cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENABLED:
-                for task in tasks:
-                    layers_up = BasicLayer_up(dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-                                              input_resolution=(
-                                                  self.patches_resolution[0] // (2 ** (self.num_layers - 1 - i_layer)),
-                                                  self.patches_resolution[1] // (2 ** (self.num_layers - 1 - i_layer))),
-                                              depth=depths_decoder[(self.num_layers - 1 - i_layer)],
-                                              num_heads=num_heads[(self.num_layers - 1 - i_layer)],
-                                              window_size=window_size,
-                                              mlp_ratio=self.mlp_ratio,
-                                              qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                              drop=drop_rate, attn_drop=attn_drop_rate,
-                                              drop_path=dpr_decoder[
-                                                        sum(depths_decoder[:(self.num_layers - 1 - i_layer)]):sum(
-                                                            depths_decoder[:(self.num_layers - 1 - i_layer) + 1])],
-                                              norm_layer=norm_layer,
-                                              upsample=PromptedPatchExpand if (i_layer < self.num_layers - 1) else None,
-                                              use_checkpoint=use_checkpoint,
-                                              block_module=PromptedSwinTransformerBlock,
-                                              num_prompts=self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.LEN,
-                                              cfg=cfg)
-
-                    self.decoder_layers_layers_up[task] = layers_up
-
-            else:
-                for task in tasks:
-                    layers_up = BasicLayer_up(dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-                                              input_resolution=(
-                                                  self.patches_resolution[0] // (2 ** (self.num_layers - 1 - i_layer)),
-                                                  self.patches_resolution[1] // (2 ** (self.num_layers - 1 - i_layer))),
-                                              depth=depths_decoder[(self.num_layers - 1 - i_layer)],
-                                              num_heads=num_heads[(self.num_layers - 1 - i_layer)],
-                                              window_size=window_size,
-                                              mlp_ratio=self.mlp_ratio,
-                                              qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                              drop=drop_rate, attn_drop=attn_drop_rate,
-                                              drop_path=dpr_decoder[
-                                                        sum(depths_decoder[:(self.num_layers - 1 - i_layer)]):sum(
-                                                            depths_decoder[:(self.num_layers - 1 - i_layer) + 1])],
-                                              norm_layer=norm_layer,
-                                              upsample=PatchExpand if (i_layer < self.num_layers - 1) else None,
-                                              use_checkpoint=use_checkpoint)
-
-                    self.decoder_layers_layers_up[task] = layers_up
-
-        elif cfg.MODEL.MTLPROMPT.DECODER_TYPE == "sep_last":
-            self.decoder_layers_layers_up = nn.ModuleList()  # decoder layer 에서 upsample Transformer
-            self.decoder_layers_concat_back_dim = nn.ModuleList()  #
-            self.decoder_layers_norm_up = nn.ModuleList()  # decoder layer 에서 upsampling 하고 normalize
-            self.decoder_layers_up = nn.ModuleList()  # Final up sample 만 포함?
-
-            decoder_last_layers_up = nn.ModuleDict()
-            # self.decoder_layers_output = nn.ModuleDict()  # Task specific heads
-
-            # Shared decoder, specific task heads <- VTAGML 이랑 다른 부분
-            for i_layer in range(self.num_layers - 1):
-                concat_linear = nn.Linear(2 * int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-                                          int(embed_dim * 2 ** (
-                                                  self.num_layers - 1 - i_layer))) if i_layer > 0 else nn.Identity()
-                if i_layer == 0:
-                    layer_up = PatchExpand(
-                        input_resolution=(self.patches_resolution[0] // (2 ** (self.num_layers - 1 - i_layer)),
-                                          self.patches_resolution[1] // (2 ** (self.num_layers - 1 - i_layer))),
-                        dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)), dim_scale=2, norm_layer=norm_layer)
-                else:
-                    layer_up = BasicLayer_up(dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-                                             input_resolution=(
-                                                 self.patches_resolution[0] // (2 ** (self.num_layers - 1 - i_layer)),
-                                                 self.patches_resolution[1] // (2 ** (self.num_layers - 1 - i_layer))),
-                                             depth=depths_decoder[(self.num_layers - 1 - i_layer)],
-                                             num_heads=num_heads[(self.num_layers - 1 - i_layer)],
-                                             window_size=window_size,
-                                             mlp_ratio=self.mlp_ratio,
-                                             qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                             drop=drop_rate, attn_drop=attn_drop_rate,
-                                             drop_path=dpr_decoder[
-                                                       sum(depths_decoder[:(self.num_layers - 1 - i_layer)]):sum(
-                                                           depths_decoder[:(self.num_layers - 1 - i_layer) + 1])],
-                                             norm_layer=norm_layer,
-                                             upsample=PatchExpand if (i_layer < self.num_layers - 1) else None,
-                                             use_checkpoint=use_checkpoint,
-                                             )
-                # 이 부분 수정
-                self.decoder_layers_layers_up.append(layer_up)
-                self.decoder_layers_concat_back_dim.append(concat_linear)
-
-            self.decoder_layers_norm_up.append(norm_layer(self.embed_dim))
-
-            if self.final_upsample == "expand_first":
-                up = FinalPatchExpand_X4(input_resolution=(
-                    img_size // patch_size, img_size // patch_size), dim_scale=4, dim=embed_dim)
-
-                self.decoder_layers_up.append(up)
-
-            i_layer = 3
-            for task in tasks:
-                if cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENABLED:
-                    last_layers_up = BasicLayer_up(dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-                                                   input_resolution=(
-                                                       self.patches_resolution[0] // (
-                                                                   2 ** (self.num_layers - 1 - i_layer)),
-                                                       self.patches_resolution[1] // (
-                                                                   2 ** (self.num_layers - 1 - i_layer))),
-                                                   depth=depths_decoder[(self.num_layers - 1 - i_layer)],
-                                                   num_heads=num_heads[(self.num_layers - 1 - i_layer)],
-                                                   window_size=window_size,
-                                                   mlp_ratio=self.mlp_ratio,
-                                                   qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                                   drop=drop_rate, attn_drop=attn_drop_rate,
-                                                   drop_path=dpr_decoder[
-                                                             sum(depths_decoder[:(self.num_layers - 1 - i_layer)]):sum(
-                                                                 depths_decoder[:(self.num_layers - 1 - i_layer) + 1])],
-                                                   norm_layer=norm_layer,
-                                                   upsample=PromptedPatchExpand if (
-                                                               i_layer < self.num_layers - 1) else None,
-                                                   use_checkpoint=use_checkpoint,
-                                                   block_module=PromptedSwinTransformerBlock,
-                                                   num_prompts=self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.LEN,
-                                                   cfg=cfg)
-                else:
-                    last_layers_up = BasicLayer_up(dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-                                                   input_resolution=(
-                                                       self.patches_resolution[0] // (
-                                                                   2 ** (self.num_layers - 1 - i_layer)),
-                                                       self.patches_resolution[1] // (
-                                                                   2 ** (self.num_layers - 1 - i_layer))),
-                                                   depth=depths_decoder[(self.num_layers - 1 - i_layer)],
-                                                   num_heads=num_heads[(self.num_layers - 1 - i_layer)],
-                                                   window_size=window_size,
-                                                   mlp_ratio=self.mlp_ratio,
-                                                   qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                                   drop=drop_rate, attn_drop=attn_drop_rate,
-                                                   drop_path=dpr_decoder[
-                                                             sum(depths_decoder[:(self.num_layers - 1 - i_layer)]):sum(
-                                                                 depths_decoder[:(self.num_layers - 1 - i_layer) + 1])],
-                                                   norm_layer=norm_layer,
-                                                   upsample=PatchExpand if (i_layer < self.num_layers - 1) else None,
-                                                   use_checkpoint=use_checkpoint)
-
-                decoder_last_layers_up[task] = last_layers_up
-            self.decoder_layers_layers_up.append(decoder_last_layers_up)
-
-            concat_linear = nn.Linear(2 * int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-                                      int(embed_dim * 2 ** (
-                                              self.num_layers - 1 - i_layer))) if i_layer > 0 else nn.Identity()
-            self.decoder_layers_concat_back_dim.append(concat_linear)
-
-            # if cfg.MODEL.MTLPROMPT.PROMPT.CHANNEL.ENABLED:
-            #     self.decoder_channel_prompt_attn = nn.ModuleDict()
-            #
-            #     for task in tasks:
-            #         chan_attn_layer = BasicLayer_up(dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-            #                                         input_resolution=(
-            #                                             self.patches_resolution[0] // (
-            #                                                         2 ** (self.num_layers - 1 - i_layer)),
-            #                                             self.patches_resolution[1] // (
-            #                                                         2 ** (self.num_layers - 1 - i_layer))),
-            #                                         depth=depths_decoder[(self.num_layers - 1 - i_layer)],
-            #                                         num_heads=num_heads[(self.num_layers - 1 - i_layer)],
-            #                                         window_size=window_size,
-            #                                         mlp_ratio=self.mlp_ratio,
-            #                                         qkv_bias=qkv_bias, qk_scale=qk_scale,
-            #                                         drop=drop_rate, attn_drop=attn_drop_rate,
-            #                                         drop_path=dpr_decoder[
-            #                                                   sum(depths_decoder[:(self.num_layers - 1 - i_layer)]):sum(
-            #                                                       depths_decoder[
-            #                                                       :(self.num_layers - 1 - i_layer) + 1])],
-            #                                         norm_layer=norm_layer,
-            #                                         upsample=PromptedPatchExpand if (
-            #                                                     i_layer < self.num_layers - 1) else None,
-            #                                         use_checkpoint=use_checkpoint,
-            #                                         block_module=ChannelPromptedSwinTransformerBlock,
-            #                                         num_prompts=self.cfg.MODEL.MTLPROMPT.PROMPT.CHANNEL.LEN,
-            #                                         cfg=cfg)
-            #         self.decoder_channel_prompt_attn[task] = chan_attn_layer
-
-        else:
-            self.decoder_layers_layers_up = nn.ModuleDict()  # decoder layer 에서 upsample Transformer
-            self.decoder_layers_concat_back_dim = nn.ModuleDict()  #
-            self.decoder_layers_norm_up = nn.ModuleDict()  # decoder layer 에서 upsampling 하고 normalize
-            self.decoder_layers_up = nn.ModuleDict()  # Final up sample 만 포함?
-
-            for task in tasks:
-
-                layers_up = nn.ModuleList()
-                concat_back_dim = nn.ModuleList()
-
-                for i_layer in range(self.num_layers):
-                    concat_linear = nn.Linear(2 * int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-                                              int(embed_dim * 2 ** (
-                                                      self.num_layers - 1 - i_layer))) if i_layer > 0 else nn.Identity()
-                    if i_layer == 0:
-                        layer_up = PatchExpand(
-                            input_resolution=(self.patches_resolution[0] // (2 ** (self.num_layers - 1 - i_layer)),
-                                              self.patches_resolution[1] // (2 ** (self.num_layers - 1 - i_layer))),
-                            dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)), dim_scale=2,
-                            norm_layer=norm_layer)
-                    else:
-                        layer_up = BasicLayer_up(dim=int(embed_dim * 2 ** (self.num_layers - 1 - i_layer)),
-                                                 input_resolution=(
-                                                     self.patches_resolution[0] // (
-                                                                 2 ** (self.num_layers - 1 - i_layer)),
-                                                     self.patches_resolution[1] // (
-                                                                 2 ** (self.num_layers - 1 - i_layer))),
-                                                 depth=depths_decoder[(self.num_layers - 1 - i_layer)],
-                                                 num_heads=num_heads[(self.num_layers - 1 - i_layer)],
-                                                 window_size=window_size,
-                                                 mlp_ratio=self.mlp_ratio,
-                                                 qkv_bias=qkv_bias, qk_scale=qk_scale,
-                                                 drop=drop_rate, attn_drop=attn_drop_rate,
-                                                 drop_path=dpr_decoder[
-                                                           sum(depths[:(self.num_layers - 1 - i_layer)]):sum(
-                                                               depths[:(self.num_layers - 1 - i_layer) + 1])],
-                                                 norm_layer=norm_layer,
-                                                 upsample=PatchExpand if (i_layer < self.num_layers - 1) else None,
-                                                 use_checkpoint=use_checkpoint)
-
-                    layers_up.append(layer_up)
-                    concat_back_dim.append(concat_linear)
-                # 이 부분 수정
-                self.decoder_layers_layers_up[task] = layers_up
-                self.decoder_layers_concat_back_dim[task] = concat_back_dim
-                self.decoder_layers_norm_up[task] = norm_layer(self.embed_dim)
-
-                if self.final_upsample == "expand_first":
-                    up = FinalPatchExpand_X4(input_resolution=(
-                        img_size // patch_size, img_size // patch_size), dim_scale=4, dim=embed_dim)
-
-                    self.decoder_layers_up[task] = up
-
-        self.apply(self._init_weights)
-
-    def _init_weights(self, m):
-        if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=.02)
-            if isinstance(m, nn.Linear) and m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
-
-    @torch.jit.ignore
-    def no_weight_decay(self):
-        return {'absolute_pos_embed'}
-
-    @torch.jit.ignore
-    def no_weight_decay_keywords(self):
-        return {'relative_position_bias_table'}
-
-    # Decoder
-    def forward_up_features(self, x, layers_up, concat_back_dim=None,
-                            norm_up=None, spa_prompt=None):  # PatchExpand, BasicLayerup
-
-        # TODO : Channel and spatial prompts
-        if self.cfg.MODEL.MTLPROMPT.DECODER_TYPE == "firstblocksep" :
-            decoder_output = {}
-            for task in self.tasks:
-                if self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENABLED:
-                    if self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.TYPE == 'SHALLOW':
-
-                        decoder_output[task] = layers_up[task](x, spa_prompt)
-
-                else:
-                    decoder_output[task] = layers_up[task](x)
-
-                decoder_output[task] = self.norm_up(decoder_output[task])
-
-            return decoder_output
-        else:
-            inx = 0
-            for layer_up in layers_up:
-
-                if inx == 0:
-                    x = layer_up(x)
-                    inx = inx + 1
-                    mtl_prompt_embd = self.prompt_upsampler(mtl_prompt_embd)
-
-                else:
-                    x = torch.cat([x, x_downsample[3 - inx]], -1)
-                    x = self.decoder_layers_concat_back_dim[inx](x)
-
-                    if self.cfg.prompts_dictionary.skip_connection:
-                        mtl_prompt_embd = torch.cat([mtl_prompt_embd, prompt_downsample[3 - inx]], -1)
-                        # print(mtl_prompt_embd.shape)
-                        mtl_prompt_embd = self.decoder_layers_concat_back_dim[inx](mtl_prompt_embd)
-                        # print(mtl_prompt_embd.shape)
-
-                    mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
-                    x, mtl_prompt_embd = layer_up(x, mtl_prompt_embd)
-                    inx = inx + 1
-
-            x = x[:, self.all_prompt_len:, :]
-            x = self.norm_up(x)  # B L C B*task , 224 /4 *224/4 , 96
-
-            return x
-
-    def forward(self, x, spa_prompt=None):   # x : B, C, H, W // task_id : B * Task
-
-        if self.cfg.MODEL.MTLPROMPT.DECODER_TYPE == "firstblocksep":
-            outputs = {}
-            layers_up =self.decoder_layers_layers_up # PatchExpand, BasicLayerup
-
-            concat_back_dim = None
-            norm_up = self.decoder_layers_norm_up
-            up = self.decoder_layers_up # Final layer up
-
-            x = self.forward_up_features(x, layers_up, concat_back_dim, norm_up, spa_prompt)
-
-            for task in self.tasks:
-                decoder_output = x[task]
-                outputs[task] = self.up_x4(decoder_output, up[task])  # ([4, 96, 224, 224])
-
-        return outputs
-
-
-    def up_x4(self, x, up):
-        H, W = self.patches_resolution  # 56, 56
-
-        B, L, C = x.shape  # torch.Size([6, 3146, 128])
-        assert L == H * W, "input features has wrong size"
-
-        if self.final_upsample == "expand_first":
-
-            x = up(x)
-            x = x.view(B, 4 * H, 4 * W, -1)
-            x = x.permute(0, 3, 1, 2)  # B,C,H,W
-
-        return x
 
 
 
@@ -789,8 +321,8 @@ class PromptedSwinUTransformer(MTLSwinUNet):
                 1, self.shared_prompt_len, embed_dim))
             trunc_normal_(self.prompt_embeddings, mean=1., std=1.)
 
-        if cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENCODER:
-            self.spa_prompt_encoder = cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENCODER
+        if cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENABLED:
+            self.spa_prompt_encoder = cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENABLED
             self.spa_prompt_len = cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.LEN
 
             if cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.METHOD == "prepend":
@@ -897,7 +429,7 @@ class PromptedSwinUTransformer(MTLSwinUNet):
         elif self.cfg.MODEL.MTLPROMPT.PROMPT.SHARED.TYPE == 'SHALLOW':
             mtl_prompt_embd = self.prompt_embeddings
 
-            if self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENCODER:
+            if self.cfg.MODEL.MTLPROMPT.PROMPT.SPATIAL.ENABLED:
                 spa_prompt = self.spa_prompt
                 for i, layer in enumerate(self.layers):
                     mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
@@ -907,8 +439,8 @@ class PromptedSwinUTransformer(MTLSwinUNet):
             else:
                 for i, layer in enumerate(self.layers):
                     mtl_prompt_embd = self.prompt_dropout(mtl_prompt_embd)
-                    x, mtl_prompt_embd = layer(x, mtl_prompt_embd)
-                    x_downsample.append(x)
+                    x, out, mtl_prompt_embd = layer(x, mtl_prompt_embd)
+                    x_downsample.append(out)
 
         return x, x_downsample, mtl_prompt_embd    # 이 부분에서 downsamplling 값 가져오기
 
@@ -958,30 +490,3 @@ class PromptedSwinUTransformer(MTLSwinUNet):
         for unique_task_id in unique_task_ids_list:
             task_type[task_type == unique_task_id] = self.task_id_2_task_idx[unique_task_id]
         return task_type, unique_task_ids_list
-
-
-# FiLM for Modulation
-class FiLM(nn.Module):
-    """ Feature-wise Linear Modulation (FiLM) layer"""
-    def __init__(self, input_size, output_size, num_film_layers=1, layer_norm=False):
-        """
-        :param input_size: feature size of x_cond
-        :param output_size: feature size of x_to_film
-        :param layer_norm: true or false
-        """
-        super(FiLM, self).__init__()
-        self.input_size = input_size
-        self.output_size = output_size
-        self.num_film_layers = num_film_layers
-        self.layer_norm = nn.LayerNorm(output_size) if layer_norm else None
-        film_output_size = self.output_size * num_film_layers * 2
-        self.gb_weights = nn.Linear(self.input_size, film_output_size)
-        self.gb_weights.bias.data.fill_(0)
-
-    def forward(self, x_cond, x_to_film):
-        gb = self.gb_weights(x_cond).unsqueeze(1)
-        gamma, beta = torch.chunk(gb, 2, dim=-1)
-        out = (1 + gamma) * x_to_film + beta
-        if self.layer_norm is not None:
-            out = self.layer_norm(out)
-        return out
