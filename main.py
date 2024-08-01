@@ -334,14 +334,21 @@ def train_one_epoch(config, model, criterion, data_loader, optimizer, epoch, mix
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
         with torch.cuda.amp.autocast(enabled=config.AMP_ENABLE):
-            outputs,importance_loss_list = model(samples)
+            outputs,cv_list = model(samples)
             loss, loss_dict = criterion(outputs, targets)
 
+            ###################
             importance_loss=0
-            for l in importance_loss_list:
-                importance_loss+=l
-
-            loss+=importance_loss
+            avg_cv=0
+            for cv in cv_list:
+                importance_loss=importance_loss+ cv ** 2
+                avg_cv=avg_cv+cv
+            avg_cv=avg_cv/len(cv_list)
+            importance_loss=importance_loss/len(cv_list)
+            gamma = 0.1
+            if avg_cv.item() >= gamma: # 변동 계수가 임계값보다 작을 경우 그래디언트 전파 방지
+                loss+=importance_loss
+            ####################
 
         is_second_order = hasattr(
             optimizer, 'is_second_order') and optimizer.is_second_order
@@ -474,7 +481,8 @@ def validate(config, data_loader, model, epoch):
         targets = {task: batch[task].cuda(
             non_blocking=True) for task in tasks}
 
-        output,importance_loss_list = model(images)
+        output,cv_list = model(images)
+
 
         num_val_points += 1
 

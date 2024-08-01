@@ -271,25 +271,25 @@ class PromptedSwinTransformer(SwinTransformer):
 
         else:
             _x = x[:, self.num_tokens:, :]
-            importance_loss_list=[]
-            dynamic_promt,importance_loss = self.mope_0(_x)
-            importance_loss_list.append(importance_loss)
+            cv_list=[]
+            dynamic_promt,cv = self.mope_0(_x)
+            cv_list.append(cv)
             x=torch.cat([dynamic_promt, x], dim=1)
             for i,layer in enumerate(self.layers):
                 x = layer(x)
                 #분리
 
                 if i==0:
-                    dynamic_promt,importance_loss = self.mope_1(x[:, self.num_tokens*2:,:])
-                    importance_loss_list.append(importance_loss)
+                    dynamic_promt,cv = self.mope_1(x[:, self.num_tokens*2:,:])
+                    cv_list.append(cv)
                     x[:, :self.num_tokens, :] = dynamic_promt
                 elif i==1:
-                    dynamic_promt,importance_loss = self.mope_2(x[:, self.num_tokens*2:,:])
-                    importance_loss_list.append(importance_loss)
+                    dynamic_promt,cv = self.mope_2(x[:, self.num_tokens*2:,:])
+                    cv_list.append(cv)
                     x[:, :self.num_tokens, :] = dynamic_promt
                 elif i==2:
-                    dynamic_promt,importance_loss = self.mope_3(x[:, self.num_tokens*2:,:])
-                    importance_loss_list.append(importance_loss)
+                    dynamic_promt,cv = self.mope_3(x[:, self.num_tokens*2:,:])
+                    cv_list.append(cv)
                     x[:, :self.num_tokens, :] = dynamic_promt
 
 
@@ -297,7 +297,7 @@ class PromptedSwinTransformer(SwinTransformer):
                     out.append(x[:, self.num_tokens*2:,:])
 
             if return_stages:
-                return out,importance_loss_list
+                return out,cv_list
             else:
                 if flatten_ft:
                       # B L C
@@ -374,18 +374,12 @@ class MoPE(nn.Module):
         # Prompt Init
         nn.init.uniform_(self.prompt_experts.data, -val, val)
 
-    def importance_loss(self,routing_weights):
-        gamma = 0.1
+    def cv(self,routing_weights):
+        #gamma = 0.1
         importance = routing_weights.sum(dim=0)  # 각 전문가의 중요도 합  모든 batch의 값을 더한다.
         cv = torch.std(importance) / torch.mean(importance)  # 변동 계수
-        loss = cv ** 2  # 변동 계수의 제곱을 손실로 사용
-
-        # 변동 계수가 임계값보다 작을 경우 그래디언트 전파 방지
-        if cv.item() < gamma:
-            with torch.no_grad():
-                loss = loss.clone()
-
-        return loss
+        #loss = cv ** 2  # 변동 계수의 제곱을 손실로 사용
+        return cv
 
     def forward(self, vision_features):
         # MultimodalRouter를 사용하여 라우팅 가중치 계산
@@ -394,7 +388,7 @@ class MoPE(nn.Module):
         routing_weights = self.router(vision_features)
         routing_weights = routing_weights.sum(dim=1).unsqueeze(1)/P
 
-        importance_loss=self.importance_loss(routing_weights)
+        cv=self.cv(routing_weights)
 
         # Compute dynamic prompt as weighted sum of prompt experts
         dynamic_prompt=0
@@ -404,7 +398,7 @@ class MoPE(nn.Module):
 
             dynamic_prompt += routing_weights[:,:, i].unsqueeze(-1) * prompt_embd
 
-        return dynamic_prompt,importance_loss
+        return dynamic_prompt,cv
 
 
 

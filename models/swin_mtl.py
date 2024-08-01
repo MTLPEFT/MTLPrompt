@@ -151,7 +151,7 @@ class MultiTaskSwin(nn.Module):
             self.tasks, self.num_outputs, channels=self.channels, out_size=self.img_size, config=config, multiscale=True)
 
     def forward(self, x):
-        shared_representation,importance_loss_list = self.backbone(x, return_stages=True)
+        shared_representation,cv_list = self.backbone(x, return_stages=True)
         for i in range(len(shared_representation)):
             shared_representation[i]=shared_representation[i]
 
@@ -165,7 +165,7 @@ class MultiTaskSwin(nn.Module):
 
 
         result = self.decoders(shared_ft)
-        return result,importance_loss_list
+        return result,cv_list
 
     def freeze_all(self):
         for param in self.parameters():
